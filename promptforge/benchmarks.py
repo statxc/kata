@@ -81,7 +81,10 @@ def load_registry_from_reference(
     require_exists: bool,
 ) -> BenchmarkRegistry:
     input_path = Path(reference).expanduser()
-    candidate_root = normalize_registry_reference(input_path)
+    candidate_root, explicit_benchmarks_dir = normalize_registry_reference(
+        input_path,
+        require_exists=require_exists,
+    )
     marker_path = candidate_root / REGISTRY_MARKER_FILENAME
 
     if require_exists and not marker_path.exists():
@@ -92,13 +95,15 @@ def load_registry_from_reference(
         )
 
     payload = read_registry_payload(marker_path)
-    benchmarks_dir_name = payload.get("benchmarks_dir", DEFAULT_BENCHMARKS_DIR)
-    if not isinstance(benchmarks_dir_name, str) or not benchmarks_dir_name.strip():
-        raise ValueError(
-            f"Invalid `benchmarks_dir` in {marker_path}. Expected a non-empty string."
-        )
-
-    benchmarks_dir = (candidate_root / benchmarks_dir_name).resolve()
+    if explicit_benchmarks_dir is not None:
+        benchmarks_dir = explicit_benchmarks_dir.resolve()
+    else:
+        benchmarks_dir_name = payload.get("benchmarks_dir", DEFAULT_BENCHMARKS_DIR)
+        if not isinstance(benchmarks_dir_name, str) or not benchmarks_dir_name.strip():
+            raise ValueError(
+                f"Invalid `benchmarks_dir` in {marker_path}. Expected a non-empty string."
+            )
+        benchmarks_dir = (candidate_root / benchmarks_dir_name).resolve()
     if require_exists and not benchmarks_dir.exists():
         raise FileNotFoundError(
             "Benchmark registry is missing its benchmarks directory: "
@@ -122,7 +127,11 @@ def load_registry_from_reference(
     )
 
 
-def normalize_registry_reference(path: Path) -> Path:
+def normalize_registry_reference(
+    path: Path,
+    *,
+    require_exists: bool,
+) -> tuple[Path, Path | None]:
     expanded = path.expanduser()
     if expanded.is_file():
         if expanded.name != REGISTRY_MARKER_FILENAME:
@@ -130,16 +139,19 @@ def normalize_registry_reference(path: Path) -> Path:
                 "Benchmark registry reference must be a registry root, benchmarks "
                 f"directory, or {REGISTRY_MARKER_FILENAME}."
             )
-        return expanded.parent
+        return expanded.parent, None
 
     if (expanded / REGISTRY_MARKER_FILENAME).exists():
-        return expanded
+        return expanded, None
 
     parent_marker = expanded.parent / REGISTRY_MARKER_FILENAME
     if expanded.name == DEFAULT_BENCHMARKS_DIR and parent_marker.exists():
-        return expanded.parent
+        return expanded.parent, expanded
 
-    return expanded
+    if expanded.name == DEFAULT_BENCHMARKS_DIR and not require_exists:
+        return expanded.parent, expanded
+
+    return expanded, None
 
 
 def discover_registry_root() -> Path | None:

@@ -24,6 +24,15 @@ from promptforge.frontier import (
 )
 from promptforge.generator import generate_prompt
 from promptforge.reporting import render_report
+from promptforge.submissions import (
+    evaluate_submission,
+    init_submission,
+    render_submission_json,
+    render_submission_validation,
+    render_submission_verification,
+    validate_submission,
+    verify_submission_result,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -254,6 +263,128 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--run", required=True, help="Run id or path to run artifacts.")
     report.set_defaults(handler=handle_report)
 
+    submission = subparsers.add_parser(
+        "submission",
+        help="Manage miner prompt submissions for PR-based competition.",
+    )
+    submission_subparsers = submission.add_subparsers(
+        dest="submission_command", required=True
+    )
+
+    submission_init = submission_subparsers.add_parser(
+        "init",
+        help="Scaffold a challenger prompt submission.",
+    )
+    submission_init.add_argument("--repo-pack", required=True, help="Target repo pack id.")
+    submission_init.add_argument(
+        "--mode",
+        choices=["contributor", "reviewer"],
+        required=True,
+        help="Prompt mode for the challenger submission.",
+    )
+    submission_init.add_argument(
+        "--submission-id",
+        required=True,
+        help=(
+            "Stable submission id. Recommended format: "
+            "`<github-username>-YYYYMMDD-NN`."
+        ),
+    )
+    submission_init.add_argument(
+        "--output-root",
+        default=None,
+        help="Optional submissions root. Defaults to ./submissions.",
+    )
+    submission_init.add_argument(
+        "--author",
+        default=None,
+        help="Optional GitHub username for leaderboard identity and avatar lookup.",
+    )
+    submission_init.add_argument("--title", default=None, help="Optional submission title.")
+    submission_init.add_argument("--notes", default=None, help="Optional short notes.")
+    submission_init.set_defaults(handler=handle_submission_init)
+
+    submission_validate = submission_subparsers.add_parser(
+        "validate",
+        help="Validate a PR submission directory and optional changed-file scope.",
+    )
+    submission_validate.add_argument(
+        "--path",
+        required=True,
+        help="Path to submissions/<repo-pack>/<mode>/<submission-id>.",
+    )
+    submission_validate.add_argument(
+        "--changed-path",
+        action="append",
+        default=None,
+        help="Changed path from the PR diff. Repeat for each changed file.",
+    )
+    submission_validate.add_argument(
+        "--repo-root",
+        default=None,
+        help="Optional PromptForge repo root used to resolve changed paths.",
+    )
+    submission_validate.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON instead of text.",
+    )
+    submission_validate.set_defaults(handler=handle_submission_validate)
+
+    submission_evaluate = submission_subparsers.add_parser(
+        "evaluate",
+        help="Run a validated submission against the current frontier.",
+    )
+    submission_evaluate.add_argument(
+        "--path",
+        required=True,
+        help="Path to submissions/<repo-pack>/<mode>/<submission-id>.",
+    )
+    submission_evaluate.add_argument(
+        "--agent-command",
+        required=True,
+        help="Shell command used to run the agent in each workspace.",
+    )
+    submission_evaluate.add_argument(
+        "--output-root",
+        default=None,
+        help="Optional base directory for run artifacts. Defaults to ./runs.",
+    )
+    submission_evaluate.add_argument(
+        "--agent-timeout-seconds",
+        type=int,
+        default=None,
+        help="Optional timeout for each agent-command run.",
+    )
+    submission_evaluate.add_argument(
+        "--checks-timeout-seconds",
+        type=int,
+        default=None,
+        help="Optional timeout for each checks.sh run.",
+    )
+    submission_evaluate.set_defaults(handler=handle_submission_evaluate)
+
+    submission_verify = submission_subparsers.add_parser(
+        "verify",
+        help="Check whether a submission result is still current and auto-mergeable.",
+    )
+    submission_verify.add_argument(
+        "--path",
+        required=True,
+        help="Path to submissions/<repo-pack>/<mode>/<submission-id>.",
+    )
+    submission_verify.add_argument(
+        "--challenge-run",
+        required=True,
+        help="Path to the challenge_summary.json generated for this submission.",
+    )
+    submission_verify.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON instead of text.",
+    )
+    submission_verify.set_defaults(handler=handle_submission_verify)
+
     return parser
 
 
@@ -365,6 +496,56 @@ def handle_eval_pack_validate(args: argparse.Namespace) -> int:
 def handle_report(args: argparse.Namespace) -> int:
     print(render_report(args.run))
     return 0
+
+
+def handle_submission_init(args: argparse.Namespace) -> int:
+    submission_dir = init_submission(
+        repo_pack=args.repo_pack,
+        mode=args.mode,
+        submission_id=args.submission_id,
+        output_root=args.output_root,
+        author=args.author,
+        title=args.title,
+        notes=args.notes,
+    )
+    print(f"Created submission: {submission_dir}")
+    return 0
+
+
+def handle_submission_validate(args: argparse.Namespace) -> int:
+    result = validate_submission(
+        args.path,
+        changed_paths=args.changed_path,
+        repo_root=args.repo_root,
+    )
+    print(
+        render_submission_json(result)
+        if args.json
+        else render_submission_validation(result)
+    )
+    return 0 if result.is_valid else 2
+
+
+def handle_submission_evaluate(args: argparse.Namespace) -> int:
+    summary = evaluate_submission(
+        args.path,
+        agent_command=args.agent_command,
+        output_root=args.output_root,
+        agent_timeout_seconds=args.agent_timeout_seconds,
+        checks_timeout_seconds=args.checks_timeout_seconds,
+    )
+    print(render_challenge_summary(summary))
+    return 0
+
+
+def handle_submission_verify(args: argparse.Namespace) -> int:
+    result = verify_submission_result(args.path, args.challenge_run)
+    print(
+        render_submission_json(result)
+        if args.json
+        else render_submission_verification(result)
+    )
+    return 0 if result.auto_merge_ready else 2
 
 
 def main(argv: Sequence[str] | None = None) -> int:

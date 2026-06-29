@@ -223,7 +223,9 @@ def compare_variants(left: dict[str, Any], right: dict[str, Any]) -> str:
         return "PromptForge win"
     if left_quality > right_quality:
         return "Baseline win"
-    if not left["agent_ok"] and not right["agent_ok"]:
+    if not left.get("validity_passed", left["agent_ok"]) and not right.get(
+        "validity_passed", right["agent_ok"]
+    ):
         return "Invalid run"
     return "Tie"
 

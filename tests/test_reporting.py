@@ -59,6 +59,21 @@ def test_compare_variants_prefers_valid_task_completion() -> None:
     assert compare_variants(baseline, generated) == "PromptForge win"
 
 
+def test_compare_variants_marks_double_invalid_runs_correctly() -> None:
+    baseline = {
+        "agent_ok": True,
+        "validity_passed": False,
+        "quality_score": 0.0,
+    }
+    generated = {
+        "agent_ok": True,
+        "validity_passed": False,
+        "quality_score": 0.0,
+    }
+
+    assert compare_variants(baseline, generated) == "Invalid run"
+
+
 def test_summarize_task_outcome_handles_multi_variant_runs() -> None:
     variants = {
         "baseline": {"quality_score": 0.0},

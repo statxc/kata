@@ -105,6 +105,21 @@ def test_init_eval_pack_defaults_to_registry_benchmarks_dir(
     ).resolve()
 
 
+def test_init_eval_pack_accepts_explicit_benchmarks_dir_without_marker(
+    tmp_path: Path,
+) -> None:
+    benchmarks_dir = tmp_path / "benchmarks"
+    benchmarks_dir.mkdir(parents=True)
+
+    pack_dir = init_eval_pack(
+        "https://github.com/example/repo.git",
+        "fix-cli-flag",
+        str(benchmarks_dir),
+    )
+
+    assert pack_dir == (benchmarks_dir / "example__repo" / "fix-cli-flag").resolve()
+
+
 def test_discover_eval_pack_tasks_accepts_pack_id_from_registry(
     tmp_path: Path,
     monkeypatch,

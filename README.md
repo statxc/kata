@@ -26,11 +26,14 @@ PromptForge currently supports:
 - baseline/frontier/challenger competition flow
 - primary and holdout task pools
 - manual frontier promotion after a successful challenge
+- PR-submission scaffolding and validation for miner challengers
+- stale-result verification against the current frontier
 
 Current MVP boundary:
 
 - it is a working manual competition system
-- it is not yet an automated challenger queue
+- it has the local/CI primitives for challenger submissions
+- it is not yet a fully automated PR bot that auto-closes or auto-merges on GitHub
 - it is not yet a full prompt-search engine
 
 Prompt generation exists in this repo as a bootstrap helper:
@@ -119,6 +122,7 @@ The usual workflow is:
 
 - `promptforge/`: core package and CLI
 - external benchmark registry repo: canonical benchmark source
+- `submissions/`: miner challenger prompts submitted by PR
 - `scripts/`: adapter commands for real agent evaluation
 - `tests/`: regression tests for evaluator behavior
 
@@ -129,6 +133,38 @@ Tracked benchmark artifacts may also include:
 - `prompts/<mode>/frontier.md`
 
 Generated eval runs are written to `runs/` and are ignored by git.
+
+## Submission Model
+
+Miner challenger PRs belong in this repo, not in the benchmark registry repo.
+
+The submission layout is:
+
+```text
+submissions/
+  <repo-pack>/
+    <mode>/
+      <submission-id>/
+        candidate.md
+        submission.json
+```
+
+Current validation rules:
+
+- PRs should only touch one submission directory
+- only `candidate.md` and `submission.json` are allowed inside that submission
+- the target repo pack must already exist in the benchmark registry
+- the target mode must already be configured in that pack's `frontier.json`
+
+Recommended identity convention:
+
+- `author`: GitHub username
+- `submission_id`: `<github-username>-YYYYMMDD-NN`
+
+This is the base contract for future PR auto-close and auto-merge automation.
+
+See `docs/submissions.md` for the detailed submission contract and stale-result
+verification flow.
 
 ## Benchmark Registry
 
@@ -227,6 +263,45 @@ Render an eval report:
 ```bash
 uv run python -m promptforge report --run <run-id>
 ```
+
+## Submission Workflow
+
+Scaffold a challenger submission:
+
+```bash
+uv run python -m promptforge submission init \
+  --repo-pack <repo-pack> \
+  --mode contributor \
+  --submission-id miner-001
+```
+
+Validate a submission and its PR-style changed paths:
+
+```bash
+uv run python -m promptforge submission validate \
+  --path submissions/<repo-pack>/contributor/miner-001 \
+  --changed-path submissions/<repo-pack>/contributor/miner-001/candidate.md \
+  --changed-path submissions/<repo-pack>/contributor/miner-001/submission.json
+```
+
+Evaluate the challenger against the current frontier:
+
+```bash
+uv run python -m promptforge submission evaluate \
+  --path submissions/<repo-pack>/contributor/miner-001 \
+  --agent-command "$PWD/scripts/run_codex_eval.sh"
+```
+
+Verify that the result is still current before merge:
+
+```bash
+uv run python -m promptforge submission verify \
+  --path submissions/<repo-pack>/contributor/miner-001 \
+  --challenge-run runs/<challenge-run>/challenge_summary.json
+```
+
+That final verification step matters because a challenger result becomes stale if
+another PR has already replaced the frontier.
 
 ## Frontier Workflow
 

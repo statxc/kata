@@ -57,6 +57,31 @@ Benchmark changes should also preserve clear provenance:
 - task-pool fingerprints
 - explicit task ids
 
+## Submission PR rules
+
+Prompt challenger PRs should submit files only under:
+
+- `submissions/<repo-pack>/<mode>/<submission-id>/`
+
+Required files:
+
+- `candidate.md`
+- `submission.json`
+
+Recommended metadata convention:
+
+- `author`: GitHub username
+- `submission_id`: `<github-username>-YYYYMMDD-NN`
+
+Submission PRs should not edit:
+
+- benchmark task definitions
+- frontier manifests
+- frontier prompt files
+- unrelated PromptForge code or docs
+
+Those PRs should be treated as invalid competition submissions.
+
 ## Scope guidance
 
 Good contributions:
