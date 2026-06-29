@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from promptforge.reporting import compare_variants, diff_paths
+from promptforge.reporting import compare_variants, diff_paths, summarize_task_outcome
 
 
 def test_diff_paths_reports_deleted_file_path(tmp_path: Path) -> None:
@@ -57,3 +57,16 @@ def test_compare_variants_prefers_valid_task_completion() -> None:
     }
 
     assert compare_variants(baseline, generated) == "PromptForge win"
+
+
+def test_summarize_task_outcome_handles_multi_variant_runs() -> None:
+    variants = {
+        "baseline": {"quality_score": 0.0},
+        "frontier": {"quality_score": 0.5},
+        "candidate": {"quality_score": 1.0},
+    }
+
+    assert (
+        summarize_task_outcome(variants, ["baseline", "frontier", "candidate"])
+        == "best variant: candidate"
+    )

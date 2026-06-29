@@ -43,17 +43,25 @@ def test_promotion_reason_explains_holdout_failure() -> None:
     primary = ChallengePoolSummary(
         task_ids=["task-a"],
         eval_run_summary="run_summary.json",
+        total_task_weight=1.0,
         variant_successes={"frontier": 0, "candidate": 1, "baseline": 0},
+        variant_invalid_tasks={"frontier": 0, "candidate": 0, "baseline": 0},
+        variant_scores={"frontier": 40.0, "candidate": 45.0, "baseline": 0.0},
         candidate_beats_frontier=True,
+        candidate_score_delta=5.0,
     )
     holdout = ChallengePoolSummary(
         task_ids=["task-b"],
         eval_run_summary="run_summary.json",
+        total_task_weight=1.0,
         variant_successes={"frontier": 1, "candidate": 1, "baseline": 0},
+        variant_invalid_tasks={"frontier": 0, "candidate": 0, "baseline": 0},
+        variant_scores={"frontier": 70.0, "candidate": 68.0, "baseline": 0.0},
         candidate_beats_frontier=False,
+        candidate_score_delta=-2.0,
     )
 
     assert (
         promotion_reason(primary, holdout)
-        == "candidate won the primary pool but failed the holdout retest"
+        == "candidate cleared the primary score margin but regressed on holdout"
     )

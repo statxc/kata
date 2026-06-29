@@ -13,13 +13,19 @@ from promptforge.frontier import (
 )
 from promptforge.provenance import EVALUATOR_VERSION, sha256_text, short_hash
 
+PRIMARY_PROMOTION_MARGIN_POINTS = 3.0
+
 
 @dataclass(frozen=True)
 class ChallengePoolSummary:
     task_ids: list[str]
     eval_run_summary: str
+    total_task_weight: float
     variant_successes: dict[str, int]
+    variant_invalid_tasks: dict[str, int]
+    variant_scores: dict[str, float]
     candidate_beats_frontier: bool
+    candidate_score_delta: float
 
 
 @dataclass(frozen=True)
@@ -37,6 +43,7 @@ class ChallengeSummary:
     candidate_prompt_hash: str
     primary_pool_fingerprint: str | None
     holdout_pool_fingerprint: str | None
+    promotion_margin_points: float
     created_at: str
     primary: ChallengePoolSummary
     holdout: ChallengePoolSummary | None
@@ -83,6 +90,7 @@ def run_frontier_challenge(
         task_names=mode_config.primary_tasks,
         output_root=str(challenge_root / "primary"),
         run_label=f"{Path(eval_pack_path).resolve().name}-{mode}-primary",
+        run_kind="challenge-primary",
         metadata={
             "evaluator_version": evaluator_version,
             "pool_name": "primary",
@@ -112,6 +120,7 @@ def run_frontier_challenge(
             task_names=mode_config.holdout_tasks,
             output_root=str(challenge_root / "holdout"),
             run_label=f"{Path(eval_pack_path).resolve().name}-{mode}-holdout",
+            run_kind="challenge-holdout",
             metadata={
                 "evaluator_version": evaluator_version,
                 "pool_name": "holdout",
@@ -124,11 +133,7 @@ def run_frontier_challenge(
             checks_timeout_seconds=checks_timeout_seconds,
         )
         holdout_summary = summarize_pool(holdout_eval, mode_config.holdout_tasks)
-        promotion_ready = holdout_summary.candidate_beats_frontier
-    else:
-        promotion_ready = primary_summary.candidate_beats_frontier
-
-    reason = promotion_reason(primary_summary, holdout_summary)
+    promotion_ready, reason = evaluate_promotion(primary_summary, holdout_summary)
     summary = ChallengeSummary(
         schema_version=2,
         run_id=challenge_run_id,
@@ -143,6 +148,7 @@ def run_frontier_challenge(
         candidate_prompt_hash=candidate_hash,
         primary_pool_fingerprint=mode_config.primary_pool_fingerprint,
         holdout_pool_fingerprint=mode_config.holdout_pool_fingerprint,
+        promotion_margin_points=PRIMARY_PROMOTION_MARGIN_POINTS,
         created_at=datetime.now(UTC).isoformat(),
         primary=primary_summary,
         holdout=holdout_summary,
@@ -179,6 +185,7 @@ def render_challenge_summary(summary: ChallengeSummary) -> str:
         lines.append("Holdout pool")
         lines.extend(render_pool(summary.holdout))
     lines.append("")
+    lines.append(f"Promotion margin: {summary.promotion_margin_points:.1f} points")
     lines.append(f"Promotion ready: {'yes' if summary.promotion_ready else 'no'}")
     lines.append(f"Reason: {summary.promotion_reason}")
     return "\n".join(lines)
@@ -201,21 +208,53 @@ def load_challenge_summary(path: str) -> ChallengeSummary:
         candidate_prompt_hash=payload.get("candidate_prompt_hash", ""),
         primary_pool_fingerprint=payload.get("primary_pool_fingerprint"),
         holdout_pool_fingerprint=payload.get("holdout_pool_fingerprint"),
+        promotion_margin_points=payload.get(
+            "promotion_margin_points", PRIMARY_PROMOTION_MARGIN_POINTS
+        ),
         created_at=payload["created_at"],
-        primary=ChallengePoolSummary(**payload["primary"]),
-        holdout=ChallengePoolSummary(**holdout_payload) if holdout_payload else None,
+        primary=parse_challenge_pool(payload["primary"]),
+        holdout=parse_challenge_pool(holdout_payload) if holdout_payload else None,
         promotion_ready=payload["promotion_ready"],
         promotion_reason=payload["promotion_reason"],
     )
 
 
+def parse_challenge_pool(payload: dict[str, object]) -> ChallengePoolSummary:
+    variant_scores = payload.get("variant_scores") or {}
+    candidate_score = float(variant_scores.get("candidate", 0.0)) if variant_scores else 0.0
+    frontier_score = float(variant_scores.get("frontier", 0.0)) if variant_scores else 0.0
+    return ChallengePoolSummary(
+        task_ids=list(payload["task_ids"]),
+        eval_run_summary=str(payload["eval_run_summary"]),
+        total_task_weight=float(payload.get("total_task_weight", len(payload["task_ids"]))),
+        variant_successes=dict(payload.get("variant_successes") or {}),
+        variant_invalid_tasks=dict(payload.get("variant_invalid_tasks") or {}),
+        variant_scores={name: float(score) for name, score in variant_scores.items()},
+        candidate_beats_frontier=bool(
+            payload.get("candidate_beats_frontier", candidate_score > frontier_score)
+        ),
+        candidate_score_delta=float(
+            payload.get("candidate_score_delta", round(candidate_score - frontier_score, 2))
+        ),
+    )
+
+
 def summarize_pool(summary: EvalRunSummary, task_ids: list[str]) -> ChallengePoolSummary:
     successes = count_variant_successes(summary)
+    invalid_tasks = count_variant_invalid_tasks(summary)
+    scores = score_variants(summary)
+    total_weight = sum(task.task_weight for task in summary.tasks)
+    candidate_score = scores.get("candidate", 0.0)
+    frontier_score = scores.get("frontier", 0.0)
     return ChallengePoolSummary(
         task_ids=task_ids,
         eval_run_summary=str(resolve_run_summary_path(summary)),
+        total_task_weight=total_weight,
         variant_successes=successes,
-        candidate_beats_frontier=successes.get("candidate", 0) > successes.get("frontier", 0),
+        variant_invalid_tasks=invalid_tasks,
+        variant_scores=scores,
+        candidate_beats_frontier=candidate_score > frontier_score,
+        candidate_score_delta=round(candidate_score - frontier_score, 2),
     )
 
 
@@ -230,17 +269,58 @@ def count_variant_successes(summary: EvalRunSummary) -> dict[str, int]:
     return successes
 
 
-def promotion_reason(
+def count_variant_invalid_tasks(summary: EvalRunSummary) -> dict[str, int]:
+    invalid_tasks: dict[str, int] = {}
+    for task in summary.tasks:
+        for variant in task.variants:
+            if not variant.validity_passed:
+                invalid_tasks[variant.name] = invalid_tasks.get(variant.name, 0) + 1
+            else:
+                invalid_tasks.setdefault(variant.name, 0)
+    return invalid_tasks
+
+
+def score_variants(summary: EvalRunSummary) -> dict[str, float]:
+    total_weight = sum(task.task_weight for task in summary.tasks)
+    if total_weight <= 0:
+        raise ValueError("Challenge pool has zero total task weight.")
+    weighted_scores: dict[str, float] = {}
+    for task in summary.tasks:
+        for variant in task.variants:
+            weighted_scores[variant.name] = (
+                weighted_scores.get(variant.name, 0.0) + variant.weighted_task_score
+            )
+    return {
+        name: round((weighted_score / total_weight) * 100, 2)
+        for name, weighted_score in weighted_scores.items()
+    }
+
+
+def evaluate_promotion(
     primary: ChallengePoolSummary,
     holdout: ChallengePoolSummary | None,
-) -> str:
+) -> tuple[bool, str]:
+    primary_delta = primary.candidate_score_delta
+    if primary.variant_invalid_tasks.get("candidate", 0) > 0:
+        return False, "candidate has invalid primary-pool task runs"
     if not primary.candidate_beats_frontier:
-        return "candidate did not beat the current frontier on the primary pool"
+        return False, "candidate did not beat the current frontier on the primary score"
+    if primary_delta < PRIMARY_PROMOTION_MARGIN_POINTS:
+        return (
+            False,
+            "candidate improved the primary score but did not clear the promotion margin",
+        )
     if holdout is None:
-        return "candidate beat the current frontier on the primary pool"
-    if not holdout.candidate_beats_frontier:
-        return "candidate won the primary pool but failed the holdout retest"
-    return "candidate beat the current frontier on both the primary and holdout pools"
+        return True, "candidate cleared the primary score margin"
+    if holdout.variant_invalid_tasks.get("candidate", 0) > 0:
+        return False, "candidate has invalid holdout-pool task runs"
+    if holdout.variant_scores.get("candidate", 0.0) < holdout.variant_scores.get("frontier", 0.0):
+        return False, "candidate cleared the primary score margin but regressed on holdout"
+    return True, "candidate cleared the primary score margin and held on holdout"
+
+
+def promotion_reason(primary: ChallengePoolSummary, holdout: ChallengePoolSummary | None) -> str:
+    return evaluate_promotion(primary, holdout)[1]
 
 
 def resolve_mode(manifest: FrontierManifest, mode: str) -> FrontierModeConfig:
@@ -257,12 +337,18 @@ def render_pool(pool: ChallengePoolSummary) -> list[str]:
     lines = [
         f"- Tasks: {', '.join(pool.task_ids)}",
         f"- Eval run: `{pool.eval_run_summary}`",
+        f"- Total task weight: {pool.total_task_weight:g}",
     ]
     for variant_name in ("baseline", "frontier", "candidate"):
         lines.append(f"- {variant_name} solved: {pool.variant_successes.get(variant_name, 0)}")
+        lines.append(
+            f"- {variant_name} invalid tasks: {pool.variant_invalid_tasks.get(variant_name, 0)}"
+        )
+        lines.append(f"- {variant_name} score: {pool.variant_scores.get(variant_name, 0.0):.2f}")
     lines.append(
         f"- Candidate beats frontier: {'yes' if pool.candidate_beats_frontier else 'no'}"
     )
+    lines.append(f"- Candidate score delta: {pool.candidate_score_delta:+.2f}")
     return lines
 
 

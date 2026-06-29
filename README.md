@@ -130,29 +130,19 @@ Tracked benchmark artifacts may also include:
 
 Generated eval runs are written to `runs/` and are ignored by git.
 
-## Current Benchmark
+## Benchmark State
 
-Current live example benchmark pack:
+This branch does not currently ship a tracked live benchmark pack under
+`evals/`.
 
-- `e35ventura/taopedia-articles`
+To run PromptForge end to end, you should first create or add a repo-specific
+eval pack, then initialize a frontier for it.
 
-Current contributor tasks:
+At minimum, that means:
 
-- `add-delayed-proxies-article`
-- `clarify-subnet-77-identity-mapping`
-- `clarify-validator-take-vs-stake-weight`
-
-The tracked frontier manifest is:
-
-- `evals/e35ventura__taopedia-articles/frontier.json`
-
-That manifest currently defines:
-
-- a fixed contributor baseline prompt
-- a contributor frontier prompt
-- a primary task pool
-- a holdout task pool
-- evaluator and benchmark provenance for that frontier
+- one repo-specific task directory under `evals/`
+- valid benchmark task files
+- a frontier manifest created with `promptforge frontier init`
 
 ## Quickstart
 
@@ -161,7 +151,7 @@ point:
 
 ```bash
 uv run python -m promptforge generate \
-  --repo https://github.com/e35ventura/taopedia-articles.git \
+  --repo /path/to/target-repo \
   --mode contributor
 ```
 
@@ -169,7 +159,7 @@ Generate the fixed baseline prompt:
 
 ```bash
 uv run python -m promptforge baseline \
-  --repo https://github.com/e35ventura/taopedia-articles.git \
+  --repo /path/to/target-repo \
   --mode contributor
 ```
 
@@ -177,15 +167,15 @@ Validate the benchmark pack:
 
 ```bash
 uv run python -m promptforge eval-pack validate \
-  --path evals/e35ventura__taopedia-articles
+  --path evals/<repo-pack>
 ```
 
 Run a baseline-vs-generated eval:
 
 ```bash
 uv run python -m promptforge eval \
-  --repo https://github.com/e35ventura/taopedia-articles.git \
-  --eval-pack evals/e35ventura__taopedia-articles \
+  --repo /path/to/target-repo \
+  --eval-pack evals/<repo-pack> \
   --mode contributor \
   --agent-command "$PWD/scripts/run_codex_eval.sh"
 ```
@@ -202,19 +192,19 @@ Initialize a frontier manifest:
 
 ```bash
 uv run python -m promptforge frontier init \
-  --repo https://github.com/e35ventura/taopedia-articles.git \
-  --eval-pack evals/e35ventura__taopedia-articles \
+  --repo /path/to/target-repo \
+  --eval-pack evals/<repo-pack> \
   --mode contributor \
-  --primary-task add-delayed-proxies-article \
-  --primary-task clarify-validator-take-vs-stake-weight \
-  --holdout-task clarify-subnet-77-identity-mapping
+  --primary-task task-a \
+  --primary-task task-b \
+  --holdout-task task-c
 ```
 
 Inspect the current frontier:
 
 ```bash
 uv run python -m promptforge frontier show \
-  --eval-pack evals/e35ventura__taopedia-articles \
+  --eval-pack evals/<repo-pack> \
   --mode contributor
 ```
 
@@ -222,7 +212,7 @@ Challenge the frontier:
 
 ```bash
 uv run python -m promptforge challenge \
-  --eval-pack evals/e35ventura__taopedia-articles \
+  --eval-pack evals/<repo-pack> \
   --mode contributor \
   --candidate-prompt path/to/candidate.md \
   --agent-command "$PWD/scripts/run_codex_eval.sh"
@@ -254,7 +244,7 @@ authenticated.
 
 ## Open-Source Status
 
-PromptForge is ready to be public as an MVP.
+PromptForge is ready to be public as a framework-level MVP.
 
 What is already solid:
 
@@ -268,6 +258,7 @@ What is already solid:
 
 What is still planned:
 
+- checked-in public benchmark packs
 - automated challenger submission and queueing
 - automated promotion policy
 - larger benchmark coverage

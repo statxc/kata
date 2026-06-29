@@ -14,6 +14,7 @@ from promptforge.eval_pack import EvalPackValidationResult, discover_eval_pack_t
 from promptforge.generator import generate_prompt_from_repository
 from promptforge.provenance import EVALUATOR_VERSION, pool_fingerprint
 from promptforge.repository import resolve_repository
+from promptforge.scoring import read_task_weight, score_variant_run
 
 IGNORED_COPY_DIRS = (
     ".git",
@@ -35,6 +36,15 @@ class VariantResult:
     checks_stderr: str
     agent_exit_code: int
     checks_exit_code: int
+    task_solved: bool
+    validity_passed: bool
+    verifier_score: float
+    quality_score: float
+    weighted_task_score: float
+    score_source: str
+    changed_paths: list[str]
+    path_policy_passed: bool
+    path_policy_violations: list[str]
     success: bool
 
 
@@ -43,6 +53,7 @@ class TaskRunSummary:
     task_id: str
     task_path: str
     task_repo_ref: str
+    task_weight: float
     variants: list[VariantResult]
 
 
@@ -143,6 +154,7 @@ def run_prompt_variants(
         task_run_root.mkdir(parents=True, exist_ok=False)
         task_snapshot = task_run_root / "eval_pack"
         shutil.copytree(task_root, task_snapshot)
+        task_weight = read_task_weight(task_snapshot)
 
         task_repo_ref = read_task_repo_ref(task_snapshot / "repo_ref.txt", fallback=repo_ref)
         with resolve_repository(task_repo_ref) as repo:
@@ -175,6 +187,7 @@ def run_prompt_variants(
                 task_id=task_root.name,
                 task_path=str(task_run_root),
                 task_repo_ref=task_repo_ref,
+                task_weight=task_weight,
                 variants=variants,
             )
         )
@@ -223,6 +236,7 @@ def run_variant(
     agent_stderr = variant_root / "agent.stderr.txt"
     checks_stdout = variant_root / "checks.stdout.txt"
     checks_stderr = variant_root / "checks.stderr.txt"
+    score_file = variant_root / "score.txt"
 
     agent_exit_code = run_agent_command(
         command=agent_command,
@@ -234,6 +248,7 @@ def run_variant(
         repo_ref=repo_ref,
         stdout_path=agent_stdout,
         stderr_path=agent_stderr,
+        score_file=score_file,
         timeout_seconds=agent_timeout_seconds,
     )
     checks_exit_code = run_checks(
@@ -246,7 +261,16 @@ def run_variant(
         repo_ref=repo_ref,
         stdout_path=checks_stdout,
         stderr_path=checks_stderr,
+        score_file=score_file,
         timeout_seconds=checks_timeout_seconds,
+    )
+    benchmark_score = score_variant_run(
+        repo_snapshot=repo_snapshot,
+        eval_pack_root=eval_pack_root,
+        workspace=workspace,
+        agent_exit_code=agent_exit_code,
+        checks_exit_code=checks_exit_code,
+        score_file=score_file,
     )
     return VariantResult(
         name=variant_name,
@@ -258,7 +282,20 @@ def run_variant(
         checks_stderr=str(checks_stderr),
         agent_exit_code=agent_exit_code,
         checks_exit_code=checks_exit_code,
-        success=agent_exit_code == 0 and checks_exit_code == 0,
+        task_solved=benchmark_score.task_solved,
+        validity_passed=benchmark_score.validity_passed,
+        verifier_score=benchmark_score.verifier_score,
+        quality_score=benchmark_score.quality_score,
+        weighted_task_score=benchmark_score.weighted_task_score,
+        score_source=benchmark_score.score_source,
+        changed_paths=benchmark_score.changed_paths,
+        path_policy_passed=benchmark_score.path_policy_passed,
+        path_policy_violations=benchmark_score.path_policy_violations,
+        success=(
+            benchmark_score.agent_ok
+            and benchmark_score.checks_passed
+            and benchmark_score.path_policy_passed
+        ),
     )
 
 
@@ -273,6 +310,7 @@ def run_agent_command(
     repo_ref: str,
     stdout_path: Path,
     stderr_path: Path,
+    score_file: Path,
     timeout_seconds: int | None,
 ) -> int:
     env = build_env(
@@ -282,6 +320,7 @@ def run_agent_command(
         repo_snapshot=repo_snapshot,
         mode=mode,
         repo_ref=repo_ref,
+        score_file=score_file,
     )
     return run_shell_command(
         command,
@@ -304,6 +343,7 @@ def run_checks(
     repo_ref: str,
     stdout_path: Path,
     stderr_path: Path,
+    score_file: Path,
     timeout_seconds: int | None,
 ) -> int:
     env = build_env(
@@ -313,6 +353,7 @@ def run_checks(
         repo_snapshot=repo_snapshot,
         mode=mode,
         repo_ref=repo_ref,
+        score_file=score_file,
     )
     return run_process(
         ["bash", str(checks_path.resolve())],
@@ -398,6 +439,7 @@ def build_env(
     repo_snapshot: Path,
     mode: str,
     repo_ref: str,
+    score_file: Path,
 ) -> dict[str, str]:
     env = dict(os.environ)
     env["PROMPTFORGE_WORKSPACE"] = str(workspace.resolve())
@@ -406,6 +448,7 @@ def build_env(
     env["PROMPTFORGE_REPO_REF"] = repo_ref
     env["PROMPTFORGE_REPO_SNAPSHOT"] = str(repo_snapshot.resolve())
     env["PROMPTFORGE_EVAL_TASK_DIR"] = str(eval_pack_root.resolve())
+    env["PROMPTFORGE_SCORE_FILE"] = str(score_file.resolve())
     env["PROMPTFORGE_TASK_FILE"] = str((eval_pack_root / "task.md").resolve())
     env["PROMPTFORGE_RUBRIC_FILE"] = str((eval_pack_root / "rubric.md").resolve())
     env["PROMPTFORGE_ALLOWED_PATHS_FILE"] = str((eval_pack_root / "allowed_paths.txt").resolve())

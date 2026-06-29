@@ -19,7 +19,7 @@ Run these before opening a PR:
 ```bash
 uv run pytest
 uv run ruff check
-uv run python -m promptforge eval-pack validate --path evals/e35ventura__taopedia-articles
+uv run python -m promptforge eval-pack validate --path <your-eval-pack>
 ```
 
 If you change the benchmark runner or reporting logic, add or update tests.
