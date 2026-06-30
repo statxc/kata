@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,8 @@ REQUIRED_FILES = (
     "allowed_paths.txt",
     "forbidden_paths.txt",
 )
+BENCHKIT_METADATA_FILENAME = "benchkit.json"
+LIVE_TASK_STATUS = "live"
 
 PLACEHOLDER_MARKERS = {
     "task.md": (
@@ -97,6 +100,14 @@ def discover_eval_pack_tasks(path: str) -> list[EvalPackValidationResult]:
             continue
         task_results.append(validate_eval_pack(str(child)))
     return task_results or [direct_result]
+
+
+def discover_live_eval_pack_tasks(path: str) -> list[EvalPackValidationResult]:
+    return [
+        result
+        for result in discover_eval_pack_tasks(path)
+        if task_is_live(result.root)
+    ]
 
 
 def render_validation_result(result: EvalPackValidationResult) -> str:
@@ -196,6 +207,16 @@ def default_forbidden_paths() -> str:
 
 def looks_like_eval_pack(path: Path) -> bool:
     return any((path / filename).exists() for filename in REQUIRED_FILES)
+
+
+def task_is_live(path: Path) -> bool:
+    metadata_path = path / BENCHKIT_METADATA_FILENAME
+    if not metadata_path.exists():
+        return True
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        return False
+    return str(payload.get("status") or "") == LIVE_TASK_STATUS
 
 
 def write_file(path: Path, content: str) -> None:

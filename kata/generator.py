@@ -145,7 +145,8 @@ def render_seed_instructions(profile_data: RepoProfileData, mode: str) -> str:
         lines.append(f"GitHub: `{profile_data.github_full_name}`")
     lines.append("")
     lines.append(
-        "This seed instruction set is source-grounded from repo files and the configured SN74 registry."
+        "This seed instruction set is source-grounded from repo files and the "
+        "configured SN74 registry."
     )
     lines.append("")
     lines.append("## Repo Overview")

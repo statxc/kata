@@ -126,6 +126,14 @@ def build_parser() -> argparse.ArgumentParser:
             "Defaults to the candidate artifact recorded in the challenge summary."
         ),
     )
+    frontier_promote.add_argument(
+        "--public-root",
+        default=None,
+        help=(
+            "Optional public Kata repo root used to publish the visible king mirror "
+            "under `kings/<repo-pack>/<mode>/`. Defaults to the current working directory."
+        ),
+    )
     frontier_promote.add_argument("--json", action="store_true")
     frontier_promote.set_defaults(handler=handle_frontier_promote)
 
@@ -438,9 +446,15 @@ def handle_frontier_show(args: argparse.Namespace) -> int:
 
 def handle_frontier_promote(args: argparse.Namespace) -> int:
     summary = load_challenge_summary(args.challenge_run)
+    public_root = (
+        Path(args.public_root).expanduser().resolve()
+        if args.public_root
+        else Path.cwd().resolve()
+    )
     manifest = promote_submission_result(
         args.submission_path or summary.candidate_artifact,
         args.challenge_run,
+        public_root=str(public_root),
     )
     print(
         render_frontier_json(manifest)

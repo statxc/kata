@@ -14,6 +14,7 @@ and competition system:
 - current frontier artifact
 - challenger agent evaluation
 - objective promotion rules
+- public king visibility with private live benchmark storage
 
 ## What It Does
 
@@ -36,6 +37,7 @@ Current MVP boundary:
 - it has the engine primitives for challenger submissions
 - it is not the GitHub bot itself
 - it is not yet a full private-submission production validator
+- miner submission transport remains PR-based by design
 
 Transition note:
 
@@ -75,6 +77,8 @@ Current validator runtime policy:
 - validator-owned base model: `Qwen3-32B`
 - validator-owned API base and API key
 - validator-owned timeouts and benchmark tasks
+- validator runs only tasks that are currently marked `live`
+- agent/check commands receive a narrowed runtime env instead of the full host env
 
 ## Competition Model
 
@@ -131,6 +135,14 @@ The simplest mental model is:
 - `frontier`: current best verified artifact
 - `challenger`: new candidate agent
 
+Public/private visibility model:
+
+- `kata` is the public miner-facing repo
+- the current king is mirrored publicly under `kings/<repo-pack>/<mode>/`
+- live primary/holdout tasks remain private in `kata-benchmarks`
+- retired tasks may be exported into public `public_archive/` only after they
+  leave all live pool versions permanently
+
 The usual workflow is:
 
 1. define a benchmark pack
@@ -145,6 +157,8 @@ The usual workflow is:
 - external `kata-benchmarks` repo: canonical benchmark source
 - external `kata-bot` repo: GitHub integration and PR orchestration
 - `submissions/`: miner challenger agents submitted by PR
+- `kings/`: public mirror of the currently promoted king per repo/mode
+- `public_archive/`: public archive of retired benchmark tasks
 - `scripts/`: adapter commands for real agent evaluation
 - `tests/`: regression tests for evaluator behavior
 

@@ -14,7 +14,7 @@ from kata.agent_bundle import (
 )
 from kata.baseline import generate_baseline_seed_instructions
 from kata.benchmarks import resolve_eval_pack_path
-from kata.eval_pack import discover_eval_pack_tasks
+from kata.eval_pack import discover_live_eval_pack_tasks
 from kata.generator import generate_seed_instructions
 from kata.provenance import (
     EVALUATOR_VERSION,
@@ -90,12 +90,17 @@ def init_frontier(
     holdout_tasks: list[str] | None = None,
     promotion_margin_points: float = DEFAULT_PROMOTION_MARGIN_POINTS,
 ) -> FrontierManifest:
-    validations = discover_eval_pack_tasks(eval_pack_path)
+    validations = discover_live_eval_pack_tasks(eval_pack_path)
     invalid = [result.root.name for result in validations if not result.is_valid]
     if invalid:
         raise ValueError(
             "Eval pack is invalid. Run `kata eval-pack validate` first. "
             f"Invalid task directories: {', '.join(invalid)}"
+        )
+    if not validations:
+        raise ValueError(
+            "Frontier init requires at least one live benchmark task. "
+            "Mark tasks as `live` before initializing the lane."
         )
 
     available_tasks = [result.root.name for result in validations]

@@ -14,7 +14,7 @@ from kata.config import (
     resolve_validator_api_key,
     resolve_validator_model,
 )
-from kata.eval_pack import EvalPackValidationResult, discover_eval_pack_tasks
+from kata.eval_pack import EvalPackValidationResult, discover_live_eval_pack_tasks
 from kata.provenance import EVALUATOR_VERSION, pool_fingerprint
 from kata.repository import resolve_repository
 from kata.scoring import read_task_weight, score_variant_run
@@ -25,6 +25,17 @@ IGNORED_COPY_DIRS = (
     "__pycache__",
     ".pytest_cache",
     ".ruff_cache",
+)
+PASSTHROUGH_ENV_VARS = (
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "PATH",
+    "PYTHONPATH",
+    "TMP",
+    "TEMP",
+    "TMPDIR",
 )
 
 
@@ -95,7 +106,11 @@ def run_artifact_variants(
     metadata: dict[str, str] | None = None,
 ) -> EvalRunSummary:
     eval_pack_root = resolve_eval_pack_path(eval_pack_path)
-    validations = discover_eval_pack_tasks(eval_pack_path)
+    validations = discover_live_eval_pack_tasks(eval_pack_path)
+    if not validations:
+        raise ValueError(
+            "Eval pack has no live tasks available for validator runs."
+        )
     invalid = [result for result in validations if not result.is_valid]
     if invalid:
         invalid_names = ", ".join(result.root.name for result in invalid)
@@ -282,7 +297,7 @@ def run_agent_command(
     score_file: Path,
     timeout_seconds: int | None,
 ) -> int:
-    env = build_env(
+    env = build_agent_env(
         workspace=workspace,
         artifact_path=artifact_path,
         eval_pack_root=eval_pack_root,
@@ -315,7 +330,7 @@ def run_checks(
     score_file: Path,
     timeout_seconds: int | None,
 ) -> int:
-    env = build_env(
+    env = build_checks_env(
         workspace=workspace,
         artifact_path=artifact_path,
         eval_pack_root=eval_pack_root,
@@ -401,17 +416,20 @@ def build_run_metadata(
     return metadata
 
 
-def build_env(
+def build_common_env(
     *,
     workspace: Path,
     artifact_path: Path,
-    eval_pack_root: Path,
     repo_snapshot: Path,
     mode: str,
     repo_ref: str,
-    score_file: Path,
 ) -> dict[str, str]:
-    env = dict(os.environ)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key in PASSTHROUGH_ENV_VARS
+    }
+    env["PYTHONNOUSERSITE"] = "1"
     env["KATA_WORKSPACE"] = str(workspace.resolve())
     env["KATA_VALIDATOR_MODEL"] = resolve_validator_model()
     env["KATA_VALIDATOR_API_BASE"] = resolve_validator_api_base()
@@ -428,6 +446,48 @@ def build_env(
     env["KATA_MODE"] = mode
     env["KATA_REPO_REF"] = repo_ref
     env["KATA_REPO_SNAPSHOT"] = str(repo_snapshot.resolve())
+    return env
+
+
+def build_agent_env(
+    *,
+    workspace: Path,
+    artifact_path: Path,
+    eval_pack_root: Path,
+    repo_snapshot: Path,
+    mode: str,
+    repo_ref: str,
+    score_file: Path,
+) -> dict[str, str]:
+    del score_file
+    env = build_common_env(
+        workspace=workspace,
+        artifact_path=artifact_path,
+        repo_snapshot=repo_snapshot,
+        mode=mode,
+        repo_ref=repo_ref,
+    )
+    env["KATA_TASK_TEXT"] = (eval_pack_root / "task.md").read_text(encoding="utf-8")
+    return env
+
+
+def build_checks_env(
+    *,
+    workspace: Path,
+    artifact_path: Path,
+    eval_pack_root: Path,
+    repo_snapshot: Path,
+    mode: str,
+    repo_ref: str,
+    score_file: Path,
+) -> dict[str, str]:
+    env = build_common_env(
+        workspace=workspace,
+        artifact_path=artifact_path,
+        repo_snapshot=repo_snapshot,
+        mode=mode,
+        repo_ref=repo_ref,
+    )
     env["KATA_EVAL_TASK_DIR"] = str(eval_pack_root.resolve())
     env["KATA_SCORE_FILE"] = str(score_file.resolve())
     env["KATA_TASK_FILE"] = str((eval_pack_root / "task.md").resolve())

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import ast
 import json
+import py_compile
 import re
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,6 +32,7 @@ from kata.frontier import (
     resolve_frontier_artifact_hash,
 )
 from kata.provenance import sha256_directory
+from kata.public_artifacts import publish_public_king
 
 SUBMISSIONS_DIRNAME = "submissions"
 SUBMISSION_SCHEMA_VERSION = 2
@@ -63,6 +66,34 @@ FORBIDDEN_ENV_REFERENCE_TOKENS = (
     "GOOGLE_API_KEY",
     "OPENROUTER_API_KEY",
 )
+FORBIDDEN_PROVIDER_SUBSTRINGS = (
+    "api.openai.com",
+    "openrouter.ai",
+    "anthropic.com",
+    "generativelanguage.googleapis.com",
+    "api.groq.com",
+    "api.together.xyz",
+    "api.fireworks.ai",
+    "api.mistral.ai",
+    "api.deepseek.com",
+    "deepinfra.com",
+    "cohere.ai",
+)
+FORBIDDEN_SAMPLING_NAMES = {
+    "temperature",
+    "top_p",
+    "top_k",
+    "min_p",
+    "top_a",
+    "frequency_penalty",
+    "presence_penalty",
+    "repetition_penalty",
+    "seed",
+    "logit_bias",
+    "logprobs",
+    "top_logprobs",
+}
+REQUIRED_SOLVE_ARGS = ("repo_path", "issue", "model", "api_base", "api_key")
 SECRET_PATTERN = re.compile(r"(sk-[A-Za-z0-9]{10,}|ghp_[A-Za-z0-9]{10,}|hf_[A-Za-z0-9]{10,})")
 
 
@@ -240,7 +271,7 @@ def validate_submission(
     else:
         try:
             metadata = load_submission_metadata(metadata_path)
-        except (ValueError, json.JSONDecodeError) as exc:
+        except (ValueError, KeyError, json.JSONDecodeError) as exc:
             reasons.append(str(exc))
 
     if not agent_path.exists():
@@ -559,6 +590,8 @@ def decide_submission_action(
 def promote_submission_result(
     submission_path: str,
     challenge_summary_path: str,
+    *,
+    public_root: str | None = None,
 ):
     verification = verify_submission_result(submission_path, challenge_summary_path)
     if not verification.auto_merge_ready:
@@ -571,13 +604,25 @@ def promote_submission_result(
         )
 
     summary = load_challenge_summary(challenge_summary_path)
-    return promote_frontier_artifact(
+    manifest = promote_frontier_artifact(
         eval_pack_path=Path(summary.manifest_path).parent.as_posix(),
         mode=summary.mode,
         candidate_artifact_path=verification.submission_path,
         source=summary.run_id,
         evaluator_version=summary.evaluator_version,
     )
+    if public_root is not None:
+        publish_public_king(
+            public_root=public_root,
+            repo_pack=verification.repo_pack,
+            mode=verification.mode,
+            submission_id=verification.submission_id,
+            challenge_run_id=summary.run_id,
+            candidate_artifact_path=verification.submission_path,
+            frontier_artifact_hash=manifest.modes[verification.mode].frontier_artifact_hash or "",
+            candidate_artifact_hash=summary.candidate_artifact_hash,
+        )
+    return manifest
 
 
 def render_submission_validation(result: SubmissionValidationResult) -> str:
@@ -896,16 +941,21 @@ def load_submission_metadata(path: Path) -> SubmissionMetadata:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"Submission metadata must contain a JSON object: {path}")
-    return SubmissionMetadata(
-        schema_version=int(payload["schema_version"]),
-        repo_pack=str(payload["repo_pack"]),
-        mode=str(payload["mode"]),
-        submission_id=str(payload["submission_id"]),
-        created_at=str(payload["created_at"]),
-        author=str(payload["author"]) if payload.get("author") is not None else None,
-        title=str(payload["title"]) if payload.get("title") is not None else None,
-        notes=str(payload["notes"]) if payload.get("notes") is not None else None,
-    )
+    try:
+        return SubmissionMetadata(
+            schema_version=int(payload["schema_version"]),
+            repo_pack=str(payload["repo_pack"]),
+            mode=str(payload["mode"]),
+            submission_id=str(payload["submission_id"]),
+            created_at=str(payload["created_at"]),
+            author=str(payload["author"]) if payload.get("author") is not None else None,
+            title=str(payload["title"]) if payload.get("title") is not None else None,
+            notes=str(payload["notes"]) if payload.get("notes") is not None else None,
+        )
+    except KeyError as exc:
+        raise ValueError(
+            f"Submission metadata is missing required field: {exc.args[0]}"
+        ) from exc
 
 
 def write_submission_metadata(path: Path, metadata: SubmissionMetadata) -> None:
@@ -1026,6 +1076,26 @@ def validate_bundle_python_sources(bundle_files: dict[str, str]) -> list[str]:
                 "Submission bundle contains invalid Python syntax in "
                 f"{relative_path}:{line_number}."
             )
+            continue
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                suffix=".py",
+                encoding="utf-8",
+                delete=False,
+            ) as handle:
+                handle.write(content)
+                temp_path = Path(handle.name)
+            py_compile.compile(str(temp_path), doraise=True)
+        except py_compile.PyCompileError:
+            reasons.append(
+                "Submission bundle failed Python compile smoke check in "
+                f"{relative_path}."
+            )
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
     agent_source = bundle_files.get(AGENT_ENTRY_FILENAME, "")
     if agent_source and "def solve(" not in agent_source:
         reasons.append("Submission agent must define solve(...).")
@@ -1034,18 +1104,106 @@ def validate_bundle_python_sources(bundle_files: dict[str, str]) -> list[str]:
 
 def validate_bundle_static_policy(bundle_files: dict[str, str]) -> list[str]:
     reasons: list[str] = []
+    parsed_trees: dict[str, ast.AST] = {}
     for relative_path, content in sorted(bundle_files.items()):
+        try:
+            parsed_trees[relative_path] = ast.parse(content, filename=relative_path)
+        except SyntaxError:
+            continue
         for token in FORBIDDEN_ENV_REFERENCE_TOKENS:
             if token in content:
                 reasons.append(
                     f"Submission bundle must not read validator/provider secret env vars "
                     f"directly: {relative_path} references `{token}`."
                 )
+        lowered = content.lower()
+        for token in FORBIDDEN_PROVIDER_SUBSTRINGS:
+            if token in lowered:
+                reasons.append(
+                    f"Submission bundle must not hardcode provider endpoints directly: "
+                    f"{relative_path} references `{token}`."
+                )
         if SECRET_PATTERN.search(content):
             reasons.append(
                 f"Submission bundle appears to contain a hardcoded secret token: {relative_path}."
             )
+    reasons.extend(validate_bundle_solver_contract(parsed_trees))
+    reasons.extend(validate_bundle_sampling_policy(parsed_trees))
     return reasons
+
+
+def validate_bundle_solver_contract(parsed_trees: dict[str, ast.AST]) -> list[str]:
+    agent_tree = parsed_trees.get(AGENT_ENTRY_FILENAME)
+    if agent_tree is None:
+        return []
+    solve_fn = next(
+        (
+            node
+            for node in ast.walk(agent_tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "solve"
+        ),
+        None,
+    )
+    if solve_fn is None:
+        return []
+    if len(solve_fn.args.args) != len(REQUIRED_SOLVE_ARGS):
+        return [
+            "Submission agent must keep the validator solve signature: "
+            "solve(repo_path, issue, model, api_base, api_key)."
+        ]
+    arg_names = [arg.arg for arg in solve_fn.args.args[: len(REQUIRED_SOLVE_ARGS)]]
+    if tuple(arg_names) != REQUIRED_SOLVE_ARGS:
+        return [
+            "Submission agent must keep the validator solve signature: "
+            "solve(repo_path, issue, model, api_base, api_key)."
+        ]
+    if solve_fn.args.vararg is not None or solve_fn.args.kwarg is not None:
+        return [
+            "Submission agent must not use *args or **kwargs in solve(...)."
+        ]
+    return []
+
+
+def validate_bundle_sampling_policy(parsed_trees: dict[str, ast.AST]) -> list[str]:
+    reasons: list[str] = []
+    for relative_path, tree in sorted(parsed_trees.items()):
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for keyword in node.keywords:
+                if keyword.arg in FORBIDDEN_SAMPLING_NAMES:
+                    reasons.append(
+                        "Submission bundle must not control model sampling parameters "
+                        f"directly: {relative_path} uses `{keyword.arg}`."
+                    )
+        if relative_path != AGENT_ENTRY_FILENAME:
+            continue
+        solve_fn = next(
+            (
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.FunctionDef) and node.name == "solve"
+            ),
+            None,
+        )
+        if solve_fn is None:
+            continue
+        for node in ast.walk(solve_fn):
+            if isinstance(node, ast.Assign):
+                targets = [target.id for target in node.targets if isinstance(target, ast.Name)]
+                for target_name in targets:
+                    if target_name in {"model", "api_base", "api_key"}:
+                        reasons.append(
+                            "Submission agent must not override validator-provided routing "
+                            f"parameters inside solve(...): `{target_name}`."
+                        )
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                if node.target.id in {"model", "api_base", "api_key"}:
+                    reasons.append(
+                        "Submission agent must not override validator-provided routing "
+                        f"parameters inside solve(...): `{node.target.id}`."
+                    )
+    return dedupe(reasons)
 
 
 def validate_submission_not_copycat(

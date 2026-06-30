@@ -471,6 +471,113 @@ def test_validate_submission_rejects_invalid_helper_python_syntax(
     )
 
 
+def test_validate_submission_rejects_solve_signature_changes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry_root = tmp_path / "registry"
+    write_registry(registry_root)
+    write_frontier_pack(registry_root, "example__repo", "/tmp/repo")
+    monkeypatch.setenv("KATA_BENCHMARKS_ROOT", str(registry_root))
+    repo_root = tmp_path / "Kata"
+    submission_root = init_submission(
+        repo_pack="example__repo",
+        mode="contributor",
+        submission_id="miner-signature",
+        output_root=str(repo_root / "submissions"),
+    )
+    (submission_root / "agent.py").write_text(
+        "def solve(issue, repo_path, model, api_base, api_key):\n"
+        "    return {\"success\": True, \"diff\": \"\"}\n",
+        encoding="utf-8",
+    )
+
+    result = validate_submission(str(submission_root))
+
+    assert not result.is_valid
+    assert any("validator solve signature" in reason for reason in result.reasons)
+
+
+def test_validate_submission_rejects_sampling_override(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry_root = tmp_path / "registry"
+    write_registry(registry_root)
+    write_frontier_pack(registry_root, "example__repo", "/tmp/repo")
+    monkeypatch.setenv("KATA_BENCHMARKS_ROOT", str(registry_root))
+    repo_root = tmp_path / "Kata"
+    submission_root = init_submission(
+        repo_pack="example__repo",
+        mode="contributor",
+        submission_id="miner-sampling",
+        output_root=str(repo_root / "submissions"),
+    )
+    (submission_root / "agent.py").write_text(
+        "def solve(repo_path, issue, model, api_base, api_key):\n"
+        "    helper(model=model, temperature=0.7)\n"
+        "    return {\"success\": True, \"diff\": \"\"}\n",
+        encoding="utf-8",
+    )
+
+    result = validate_submission(str(submission_root))
+
+    assert not result.is_valid
+    assert any("sampling parameters" in reason for reason in result.reasons)
+
+
+def test_validate_submission_rejects_direct_provider_endpoint(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry_root = tmp_path / "registry"
+    write_registry(registry_root)
+    write_frontier_pack(registry_root, "example__repo", "/tmp/repo")
+    monkeypatch.setenv("KATA_BENCHMARKS_ROOT", str(registry_root))
+    repo_root = tmp_path / "Kata"
+    submission_root = init_submission(
+        repo_pack="example__repo",
+        mode="contributor",
+        submission_id="miner-provider-url",
+        output_root=str(repo_root / "submissions"),
+    )
+    (submission_root / "agent.py").write_text(
+        "API_URL = 'https://api.openai.com/v1/chat/completions'\n\n"
+        "def solve(repo_path, issue, model, api_base, api_key):\n"
+        "    return {\"success\": True, \"diff\": API_URL}\n",
+        encoding="utf-8",
+    )
+
+    result = validate_submission(str(submission_root))
+
+    assert not result.is_valid
+    assert any("provider endpoints" in reason for reason in result.reasons)
+
+
+def test_validate_submission_reports_malformed_metadata_instead_of_crashing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry_root = tmp_path / "registry"
+    write_registry(registry_root)
+    write_frontier_pack(registry_root, "example__repo", "/tmp/repo")
+    monkeypatch.setenv("KATA_BENCHMARKS_ROOT", str(registry_root))
+    repo_root = tmp_path / "Kata"
+    submission_root = init_submission(
+        repo_pack="example__repo",
+        mode="contributor",
+        submission_id="miner-bad-metadata",
+        output_root=str(repo_root / "submissions"),
+    )
+    (submission_root / "agent.py").write_text(VALID_AGENT, encoding="utf-8")
+    (submission_root / "submission.json").write_text("{\"schema_version\": 2}\n", encoding="utf-8")
+
+    result = validate_submission(str(submission_root))
+
+    assert not result.is_valid
+    assert any("missing required field: repo_pack" in reason for reason in result.reasons)
+
+
 def test_validate_submission_rejects_inactive_repo_pack(
     tmp_path: Path,
     monkeypatch,
@@ -899,6 +1006,62 @@ def test_promote_submission_result_updates_frontier_for_verified_winner(
         == candidate_hash
     )
     assert manifest.modes["contributor"].frontier_source == "challenge-1"
+
+
+def test_promote_submission_result_updates_public_king_mirror(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry_root = tmp_path / "registry"
+    write_registry(registry_root)
+    pack_root = write_frontier_pack(registry_root, "example__repo", "/tmp/repo")
+    monkeypatch.setenv("KATA_BENCHMARKS_ROOT", str(registry_root))
+    public_kata_root = tmp_path / "public-kata"
+    public_kata_root.mkdir()
+    submission_root = init_submission(
+        repo_pack="example__repo",
+        mode="contributor",
+        submission_id="miner-public-king",
+        output_root=str(public_kata_root / "submissions"),
+    )
+    candidate_text = (
+        "def solve(repo_path, issue, model, api_base, api_key):\n"
+        "    return {\"success\": True, \"diff\": \"public-king\"}\n"
+    )
+    (submission_root / "agent.py").write_text(candidate_text, encoding="utf-8")
+    candidate_hash = hash_submission_bundle(submission_root)
+    summary_path = tmp_path / "challenge_summary.json"
+    summary_path.write_text(
+        json.dumps(
+            challenge_summary_payload(
+                pack_root=pack_root,
+                submission_root=submission_root,
+                frontier_artifact_hash=sha256_directory(
+                    pack_root / "agents" / "contributor" / "frontier",
+                    include=[AGENT_ENTRY_FILENAME, AGENT_MANIFEST_FILENAME],
+                ),
+                candidate_artifact_hash=candidate_hash,
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    promote_submission_result(
+        str(submission_root),
+        str(summary_path),
+        public_root=str(public_kata_root),
+    )
+
+    public_agent = public_kata_root / "kings" / "example__repo" / "contributor" / "agent.py"
+    public_metadata = (
+        public_kata_root / "kings" / "example__repo" / "contributor" / "king.json"
+    )
+    assert public_agent.read_text(encoding="utf-8") == candidate_text
+    assert (
+        json.loads(public_metadata.read_text(encoding="utf-8"))["submission_id"]
+        == "miner-public-king"
+    )
 
 
 def test_promote_submission_result_rejects_stale_submission(

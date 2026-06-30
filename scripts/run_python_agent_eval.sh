@@ -3,14 +3,14 @@ set -euo pipefail
 
 workspace=${KATA_WORKSPACE:-}
 agent_file=${KATA_AGENT_FILE:-}
-task_file=${KATA_TASK_FILE:-}
+task_text=${KATA_TASK_TEXT:-}
 model=${KATA_VALIDATOR_MODEL:-Qwen3-32B}
 api_base=${KATA_VALIDATOR_API_BASE:-}
 api_key=${KATA_VALIDATOR_API_KEY:-}
 
 : "${workspace:?KATA_WORKSPACE is required}"
 : "${agent_file:?KATA_AGENT_FILE is required}"
-: "${task_file:?KATA_TASK_FILE is required}"
+: "${task_text:?KATA_TASK_TEXT is required}"
 
 python3 - <<'PY'
 from __future__ import annotations
@@ -74,8 +74,7 @@ def apply_patch(repo_path: Path, patch_text: str) -> None:
 
 workspace = Path(os.environ["KATA_WORKSPACE"]).resolve()
 agent_path = Path(os.environ["KATA_AGENT_FILE"]).resolve()
-task_path = Path(os.environ["KATA_TASK_FILE"]).resolve()
-issue = task_path.read_text(encoding="utf-8")
+issue = os.environ["KATA_TASK_TEXT"]
 model = (
     os.environ.get("KATA_VALIDATOR_MODEL")
     or "Qwen3-32B"
