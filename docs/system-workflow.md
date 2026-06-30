@@ -36,7 +36,7 @@ This is the workflow in order.
 
 3. Kata initializes the lane for that repo and mode.
    Today this seeds the first baseline/frontier lane artifacts from
-   initialization prompts, but challenger submissions already use the
+   source-grounded repo analysis, and challenger submissions use the
    `agent.py` contract.
 
 4. A miner opens a PR to `Kata` with one challenger agent submission.

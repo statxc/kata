@@ -3,7 +3,7 @@
 Kata now accepts challenger agents through PR submissions.
 
 The benchmark lane is still repo-specific, but the miner artifact is no longer
-just prompt text. The required entrypoint is `agent.py`.
+just a text-only artifact. The required entrypoint is `agent.py`.
 
 ## Canonical Layout
 

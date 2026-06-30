@@ -8,7 +8,7 @@ and more useful.
 
 - Keep scoring objective and reproducible.
 - Prefer pinned tasks and explicit checks over subjective judgment.
-- Treat benchmark and evaluator correctness as higher priority than prompt style.
+- Treat benchmark and evaluator correctness as higher priority than artifact style.
 - Keep changes scoped and easy to audit.
 - Preserve benchmark provenance so results stay comparable over time.
 
@@ -95,7 +95,7 @@ Good contributions:
 - better task coverage
 - clearer baseline/frontier/challenger workflow
 - safer reporting and anti-gaming logic
-- better contributor and reviewer prompt initialization
+- better contributor and reviewer seed-agent initialization
 
 Lower-priority contributions:
 

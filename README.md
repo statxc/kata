@@ -6,7 +6,7 @@ It evaluates repo-specific challenger artifacts on pinned benchmark tasks and
 only calls a challenger better when it solves more verified work under the same
 conditions.
 
-Kata is not just a prompt library. The main product is the evaluation
+Kata is not just an agent scaffold repo. The main product is the evaluation
 and competition system:
 
 - fixed benchmark tasks
@@ -122,7 +122,7 @@ Kata currently has two separate jobs:
    Compare baseline, frontier, and challenger artifacts on the same benchmark.
 
 That is why the repo has both initialization helpers and competition commands.
-Today, initialization still uses source-grounded prompt generation to seed the
+Today, initialization still uses source-grounded repo analysis to seed the
 first baseline/frontier agents, but the competition itself is agent-vs-agent.
 
 The simplest mental model is:

@@ -14,8 +14,8 @@ Kata is an objective repo-specific agent evaluation system. Its scoring
 algorithm
 must answer one question:
 
-> Under the same repo, benchmark, and execution conditions, did one prompt
-> perform better than another?
+> Under the same repo, benchmark, and execution conditions, did one challenger
+> artifact perform better than another?
 
 This document defines the scoring model for that comparison.
 
@@ -24,7 +24,7 @@ The design goal is:
 - scientific enough to be defensible
 - simple enough to audit
 - strict enough to resist gaming
-- scoped enough to compare prompts within one repo benchmark lane
+- scoped enough to compare challenger artifacts within one repo benchmark lane
 
 Kata does **not** define one universal score across all repos.
 
@@ -42,7 +42,7 @@ requirements behind that rule.
 
 ## Competition Lane
 
-One prompt competition lane is:
+One Kata competition lane is:
 
 `repo + mode + evaluator_version + task_pool_fingerprint`
 
@@ -52,8 +52,8 @@ User-facing shorthand:
 
 Examples:
 
-- contributor prompts for `e35ventura/taopedia-articles`
-- reviewer prompts for `entrius/gittensor`
+- contributor agents for `e35ventura/taopedia-articles`
+- reviewer agents for `entrius/gittensor`
 
 Scores from different lanes should not be treated as directly comparable.
 
@@ -64,7 +64,7 @@ Scores from different lanes should not be treated as directly comparable.
 Kata scoring follows these principles:
 
 1. **Objective first**
-   Scores must come from benchmark checks, not subjective prompt judgments.
+   Scores must come from benchmark checks, not subjective artifact judgments.
 
 2. **Validity before score**
    A run that violates benchmark integrity should not be rescued by partial
@@ -83,7 +83,7 @@ Kata scoring follows these principles:
 
 ---
 
-## Prompt Roles
+## Artifact Roles
 
 Kata evaluates three artifact roles inside one challenge:
 
@@ -301,7 +301,7 @@ The MVP should **not** subtract cost from benchmark score.
 Reason:
 
 - task correctness and execution cost are different optimization axes
-- combining them too early can hide whether a prompt is actually better or just
+- combining them too early can hide whether an agent is actually better or just
   cheaper
 
 Future versions may support separate efficiency leaderboards or Pareto-style
@@ -312,7 +312,7 @@ comparison, but not in the core promotion score.
 ## Variance and Repeated Runs
 
 LLM-based agent evaluation contains runtime variance. The most defensible long
-term model is to evaluate prompts across fixed seeds or repeated runs.
+term model is to evaluate challenger artifacts across fixed seeds or repeated runs.
 
 ### Future Stronger Formula
 
