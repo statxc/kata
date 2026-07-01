@@ -19,6 +19,7 @@ from kata.frontier import (
     load_frontier_manifest,
     resolve_frontier_artifact_hash,
 )
+from kata.live_progress import update_live_status
 from kata.provenance import EVALUATOR_VERSION, pool_fingerprint, short_hash
 from kata.public_artifacts import resolve_artifact_path
 
@@ -92,6 +93,27 @@ def run_frontier_challenge(
         mode_config,
         selected_task_ids=selected_primary_tasks,
     )
+    update_live_status(
+        {
+            "state": "running",
+            "phase": "primary",
+            "repo_pack": eval_pack_root.name,
+            "mode": mode,
+            "candidate_submission_id": candidate_path.name,
+            "candidate_author": infer_submission_author(candidate_path.name),
+            "challenge_run_id": challenge_run_id,
+            "evaluator_version": evaluator_version,
+            "validator_model": validator_model,
+            "frontier_artifact_hash": frontier_hash,
+            "candidate_artifact_hash": candidate_hash,
+            "primary_pool_fingerprint": current_primary_fingerprint,
+            "holdout_pool_fingerprint": None,
+            "pools": {
+                "primary": None,
+                "holdout": None,
+            },
+        }
+    )
 
     primary_eval = run_artifact_variants(
         repo_ref=manifest.repo_ref,
@@ -138,6 +160,13 @@ def run_frontier_challenge(
         current_holdout_fingerprint = current_holdout_pool_fingerprint(
             eval_pack_path,
             mode_config,
+        )
+        update_live_status(
+            {
+                "state": "running",
+                "phase": "holdout",
+                "holdout_pool_fingerprint": current_holdout_fingerprint,
+            }
         )
         holdout_eval_pack_path = (
             str(
@@ -214,6 +243,15 @@ def run_frontier_challenge(
         promotion_reason=reason,
     )
     write_challenge_summary(challenge_root / "challenge_summary.json", summary)
+    update_live_status(
+        {
+            "state": "verifying",
+            "phase": "verifying",
+            "challenge_summary_path": str(challenge_root / "challenge_summary.json"),
+            "promotion_ready": promotion_ready,
+            "promotion_reason": reason,
+        }
+    )
     return summary
 
 
@@ -520,6 +558,15 @@ def build_challenge_id(eval_pack_name: str, mode: str) -> str:
 
 def write_challenge_summary(path: Path, summary: ChallengeSummary) -> None:
     path.write_text(json.dumps(asdict(summary), indent=2) + "\n", encoding="utf-8")
+
+
+def infer_submission_author(submission_id: str) -> str | None:
+    if submission_id.startswith("kata-init"):
+        return "Kata Seed"
+    parts = submission_id.rsplit("-", 2)
+    if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+        return parts[0]
+    return submission_id or None
 
 
 def sha256_bundle_dict(files: dict[str, str]) -> str:

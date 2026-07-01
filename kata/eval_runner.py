@@ -15,6 +15,7 @@ from kata.config import (
     resolve_validator_model,
 )
 from kata.eval_pack import EvalPackValidationResult, discover_live_eval_pack_tasks
+from kata.live_progress import update_pool_status
 from kata.provenance import EVALUATOR_VERSION, pool_fingerprint
 from kata.repository import resolve_repository
 from kata.scoring import read_task_weight, score_variant_run
@@ -132,6 +133,30 @@ def run_artifact_variants(
     runs_root = Path(output_root) if output_root else Path("runs")
     run_root = runs_root / run_id
     run_root.mkdir(parents=True, exist_ok=False)
+    pool_name = (metadata or {}).get("pool_name") or run_kind
+    update_pool_status(
+        pool_name,
+        {
+            "state": "running",
+            "run_id": run_id,
+            "run_kind": run_kind,
+            "eval_pack": str(eval_pack_root),
+            "mode": mode,
+            "total_tasks": len(task_ids),
+            "completed_tasks": 0,
+            "task_statuses": [
+                {
+                    "task_id": task_id,
+                    "status": "queued",
+                    "completed": False,
+                    "candidate": {"started": False, "finished": False},
+                    "frontier": {"started": False, "finished": False},
+                }
+                for task_id in task_ids
+            ],
+            "updated_at": datetime.now(UTC).isoformat(),
+        },
+    )
 
     task_summaries: list[TaskRunSummary] = []
     for validation in selected_validations:
@@ -172,6 +197,20 @@ def run_artifact_variants(
                 variants=variants,
             )
         )
+        update_pool_status(
+            pool_name,
+            {
+                "state": "running",
+                "run_id": run_id,
+                "run_kind": run_kind,
+                "eval_pack": str(eval_pack_root),
+                "mode": mode,
+                "total_tasks": len(task_ids),
+                "completed_tasks": len(task_summaries),
+                "task_statuses": summarize_progress_tasks(task_summaries, task_ids),
+                "updated_at": datetime.now(UTC).isoformat(),
+            },
+        )
 
     summary = EvalRunSummary(
         run_id=run_id,
@@ -190,7 +229,90 @@ def run_artifact_variants(
         ),
     )
     write_summary(run_root / "run_summary.json", summary)
+    update_pool_status(
+        pool_name,
+        {
+            "state": "completed",
+            "run_id": run_id,
+            "run_kind": run_kind,
+            "eval_pack": str(eval_pack_root),
+            "mode": mode,
+            "total_tasks": len(task_ids),
+            "completed_tasks": len(task_summaries),
+            "task_statuses": summarize_progress_tasks(task_summaries, task_ids),
+            "updated_at": summary.created_at,
+        },
+    )
     return summary
+
+
+def summarize_progress_tasks(
+    task_summaries: list[TaskRunSummary],
+    task_ids: list[str],
+) -> list[dict[str, object]]:
+    by_id = {summary.task_id: summary for summary in task_summaries}
+    progress: list[dict[str, object]] = []
+    for task_id in task_ids:
+        task_summary = by_id.get(task_id)
+        if task_summary is None:
+            progress.append(
+                {
+                    "task_id": task_id,
+                    "status": "queued",
+                    "completed": False,
+                    "candidate": {"started": False, "finished": False},
+                    "frontier": {"started": False, "finished": False},
+                }
+            )
+            continue
+        candidate = summarize_progress_variant(task_summary, "candidate")
+        frontier = summarize_progress_variant(task_summary, "frontier")
+        progress.append(
+            {
+                "task_id": task_id,
+                "status": progress_task_status(candidate, frontier),
+                "completed": True,
+                "candidate": candidate,
+                "frontier": frontier,
+            }
+        )
+    return progress
+
+
+def summarize_progress_variant(
+    task_summary: TaskRunSummary,
+    variant_name: str,
+) -> dict[str, object]:
+    variant = next(
+        (candidate for candidate in task_summary.variants if candidate.name == variant_name),
+        None,
+    )
+    if variant is None:
+        return {"started": False, "finished": False}
+    return {
+        "started": True,
+        "finished": True,
+        "solved": variant.task_solved,
+        "valid": variant.validity_passed,
+        "success": variant.success,
+        "verifier_score": variant.verifier_score,
+        "weighted_task_score": variant.weighted_task_score,
+    }
+
+
+def progress_task_status(
+    candidate: dict[str, object],
+    frontier: dict[str, object],
+) -> str:
+    if not candidate.get("valid", False):
+        return "candidate invalid"
+    if candidate.get("solved", False) and not frontier.get("solved", False):
+        return "candidate ahead"
+    if candidate.get("solved", False) and frontier.get("solved", False):
+        return "both solved"
+    if not candidate.get("solved", False) and frontier.get("solved", False):
+        return "frontier ahead"
+    return "both failed"
 
 
 def run_variant(
