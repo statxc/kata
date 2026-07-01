@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 TASK_WEIGHT_FILENAME = "task_weight.txt"
+IGNORED_DIFF_PATH_PREFIXES = ("node_modules/",)
 
 
 @dataclass(frozen=True)
@@ -126,8 +127,14 @@ def diff_paths(source: Path, target: Path) -> list[str]:
         status, _, raw_path = stripped.partition("\t")
         if not raw_path:
             continue
-        prefixes = source_prefixes if status.startswith(("D", "M", "R", "C")) else target_prefixes
+        prefixes = (
+            source_prefixes
+            if status.startswith(("D", "M", "R", "C", "T"))
+            else target_prefixes
+        )
         normalized = normalize_diff_path(raw_path, prefixes)
+        if is_ignored_diff_path(normalized):
+            continue
         paths.append(normalized)
     return sorted(set(paths))
 
@@ -145,6 +152,10 @@ def normalize_diff_path(path: str, prefixes: list[str]) -> str:
         if normalized.startswith(prefix):
             return normalized.removeprefix(prefix)
     return normalized
+
+
+def is_ignored_diff_path(path: str) -> bool:
+    return any(path.startswith(prefix) for prefix in IGNORED_DIFF_PATH_PREFIXES)
 
 
 def read_path_rules(path: Path) -> list[str]:

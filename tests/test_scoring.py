@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from kata.challenge import ChallengePoolSummary, evaluate_promotion
-from kata.scoring import score_variant_run
+from kata.scoring import diff_paths, score_variant_run
 
 
 def write_file(path: Path, content: str) -> None:
@@ -74,6 +74,23 @@ def test_score_variant_run_zeroes_quality_on_path_violation(tmp_path: Path) -> N
     assert result.quality_score == 0.0
     assert not result.validity_passed
     assert result.path_policy_violations == ["forbidden.txt"]
+
+
+def test_diff_paths_ignores_node_dependency_artifacts(tmp_path: Path) -> None:
+    repo_snapshot = tmp_path / "repo"
+    workspace = tmp_path / "workspace"
+    (repo_snapshot / "node_modules" / ".bin").mkdir(parents=True)
+    (workspace / "node_modules" / ".bin").mkdir(parents=True)
+    (workspace / "src").mkdir()
+    (repo_snapshot / "node_modules" / ".bin" / "prettier").symlink_to(
+        "../prettier/bin/prettier.cjs"
+    )
+    write_file(workspace / "node_modules" / ".bin" / "prettier", "copied shim\n")
+    write_file(workspace / "src" / "answer.txt", "ok\n")
+
+    paths = diff_paths(repo_snapshot, workspace)
+
+    assert paths == ["src/answer.txt"]
 
 
 def test_evaluate_promotion_requires_margin() -> None:

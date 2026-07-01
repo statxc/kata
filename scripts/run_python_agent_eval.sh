@@ -30,9 +30,17 @@ def load_agent_module(agent_path: Path):
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load agent module: {agent_path}")
     module = importlib.util.module_from_spec(spec)
+    previous_module = sys.modules.get(spec.name)
+    sys.modules[spec.name] = module
     sys.path.insert(0, str(agent_path.parent))
     try:
         spec.loader.exec_module(module)
+    except BaseException:
+        if previous_module is None:
+            sys.modules.pop(spec.name, None)
+        else:
+            sys.modules[spec.name] = previous_module
+        raise
     finally:
         sys.path.pop(0)
     return module

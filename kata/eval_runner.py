@@ -26,6 +26,7 @@ IGNORED_COPY_DIRS = (
     ".pytest_cache",
     ".ruff_cache",
 )
+NODE_LOCKFILES = ("package-lock.json", "npm-shrinkwrap.json")
 PASSTHROUGH_ENV_VARS = (
     "HOME",
     "LANG",
@@ -207,7 +208,8 @@ def run_variant(
     checks_timeout_seconds: int | None,
 ) -> VariantResult:
     workspace = variant_root / "workspace"
-    shutil.copytree(repo_snapshot, workspace)
+    copy_repository(repo_snapshot, workspace)
+    prepare_repository_dependencies(workspace, variant_root)
 
     artifact_root = variant_root / "artifact"
     artifact_path = stage_artifact_bundle(
@@ -398,6 +400,54 @@ def run_process(
     return completed.returncode
 
 
+def prepare_repository_dependencies(repo_snapshot: Path, task_run_root: Path) -> None:
+    if not should_install_node_dependencies(repo_snapshot):
+        return
+    stdout_path = task_run_root / "dependency-install.stdout.txt"
+    stderr_path = task_run_root / "dependency-install.stderr.txt"
+    exit_code = run_process(
+        ["npm", "ci", "--ignore-scripts"],
+        repo_snapshot,
+        build_dependency_env(),
+        stdout_path,
+        stderr_path,
+        timeout_seconds=read_dependency_install_timeout_seconds(),
+    )
+    if exit_code != 0:
+        detail = stderr_path.read_text(encoding="utf-8", errors="replace").strip()
+        raise RuntimeError(
+            "Repository dependency installation failed before benchmark checks. "
+            f"Command: npm ci --ignore-scripts. Exit code: {exit_code}. "
+            f"{detail[:2000]}"
+        )
+
+
+def should_install_node_dependencies(repo_snapshot: Path) -> bool:
+    if not (repo_snapshot / "package.json").exists():
+        return False
+    return any((repo_snapshot / lockfile).exists() for lockfile in NODE_LOCKFILES)
+
+
+def build_dependency_env() -> dict[str, str]:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key in PASSTHROUGH_ENV_VARS
+    }
+    env["PYTHONNOUSERSITE"] = "1"
+    env.setdefault("CI", "true")
+    return env
+
+
+def read_dependency_install_timeout_seconds() -> int:
+    raw = os.environ.get("KATA_DEPENDENCY_INSTALL_TIMEOUT_SECONDS", "300")
+    try:
+        value = int(raw)
+    except ValueError:
+        return 300
+    return max(1, value)
+
+
 def build_run_metadata(
     *,
     task_ids: list[str],
@@ -512,7 +562,12 @@ def build_run_id(task_id: str) -> str:
 
 
 def copy_repository(source: Path, target: Path) -> None:
-    shutil.copytree(source, target, ignore=shutil.ignore_patterns(*IGNORED_COPY_DIRS))
+    shutil.copytree(
+        source,
+        target,
+        symlinks=True,
+        ignore=shutil.ignore_patterns(*IGNORED_COPY_DIRS),
+    )
 
 
 def write_summary(path: Path, summary: EvalRunSummary) -> None:
