@@ -93,6 +93,15 @@ def run_frontier_challenge(
         mode_config,
         selected_task_ids=selected_primary_tasks,
     )
+    if mode_config.holdout_task_count > 0 and not mode_config.holdout_tasks:
+        raise ValueError(
+            "Private holdout tasks are configured for this lane, but they are not available "
+            "in the current validator environment. Set KATA_PRIVATE_BENCHMARKS_ROOT."
+        )
+    current_holdout_fingerprint = current_holdout_pool_fingerprint(
+        eval_pack_path,
+        mode_config,
+    )
     update_live_status(
         {
             "state": "running",
@@ -107,10 +116,10 @@ def run_frontier_challenge(
             "frontier_artifact_hash": frontier_hash,
             "candidate_artifact_hash": candidate_hash,
             "primary_pool_fingerprint": current_primary_fingerprint,
-            "holdout_pool_fingerprint": None,
+            "holdout_pool_fingerprint": current_holdout_fingerprint,
             "pools": {
-                "primary": None,
-                "holdout": None,
+                "primary": queued_pool_status("primary", selected_primary_tasks),
+                "holdout": queued_pool_status("holdout", mode_config.holdout_tasks),
             },
         }
     )
@@ -151,16 +160,7 @@ def run_frontier_challenge(
 
     holdout_summary: ChallengePoolSummary | None = None
     promotion_ready = False
-    if mode_config.holdout_task_count > 0 and not mode_config.holdout_tasks:
-        raise ValueError(
-            "Private holdout tasks are configured for this lane, but they are not available "
-            "in the current validator environment. Set KATA_PRIVATE_BENCHMARKS_ROOT."
-        )
     if primary_summary.candidate_beats_frontier and mode_config.holdout_tasks:
-        current_holdout_fingerprint = current_holdout_pool_fingerprint(
-            eval_pack_path,
-            mode_config,
-        )
         update_live_status(
             {
                 "state": "running",
@@ -210,11 +210,6 @@ def run_frontier_challenge(
             checks_timeout_seconds=checks_timeout_seconds,
         )
         holdout_summary = summarize_pool(holdout_eval, mode_config.holdout_tasks)
-    else:
-        current_holdout_fingerprint = current_holdout_pool_fingerprint(
-            eval_pack_path,
-            mode_config,
-        )
     promotion_ready, reason = evaluate_promotion(
         primary_summary,
         holdout_summary,
@@ -253,6 +248,25 @@ def run_frontier_challenge(
         }
     )
     return summary
+
+
+def queued_pool_status(pool_name: str, task_ids: list[str]) -> dict[str, object]:
+    return {
+        "name": pool_name,
+        "state": "queued",
+        "total_tasks": len(task_ids),
+        "completed_tasks": 0,
+        "task_statuses": [
+            {
+                "task_id": task_id,
+                "status": "queued",
+                "completed": False,
+                "candidate": {"started": False, "finished": False},
+                "frontier": {"started": False, "finished": False},
+            }
+            for task_id in task_ids
+        ],
+    }
 
 
 def render_challenge_summary(summary: ChallengeSummary) -> str:
