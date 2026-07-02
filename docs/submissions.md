@@ -11,7 +11,7 @@ Each miner PR should add or update exactly one submission directory:
 
 ```text
 submissions/
-  <repo-pack>/
+  <subnet-pack>/
     <mode>/
       <submission-id>/
         agent.py
@@ -23,7 +23,7 @@ Current scope:
 
 - Python agent bundles
 - one submission directory per PR
-- one repo-pack lane per submission
+- one subnet-pack lane per submission
 
 ## Required Files
 
@@ -73,7 +73,7 @@ Example:
 ```json
 {
   "schema_version": 2,
-  "repo_pack": "example__repo",
+  "subnet_pack": "sn60__bitsec",
   "mode": "miner",
   "submission_id": "carlos4s-20260629-01",
   "created_at": "2026-06-29T00:00:00+00:00",
@@ -82,6 +82,9 @@ Example:
   "notes": "short optional notes"
 }
 ```
+
+`subnet_pack` is the canonical field. Older `repo_pack` metadata is still
+accepted as a legacy alias so existing submissions and lane files do not break.
 
 Recommended identity convention:
 
@@ -127,7 +130,7 @@ Validate a checked-out submission bundle:
 
 ```bash
 uv run kata submission validate \
-  --path submissions/<repo-pack>/<mode>/<submission-id>
+  --path submissions/<subnet-pack>/<mode>/<submission-id>
 ```
 
 ## Evaluation Flow
@@ -136,7 +139,7 @@ After validation, Kata evaluates the candidate against the current king.
 
 ```bash
 KATA_SN60_PROJECT_KEYS=<project-keys> uv run kata submission evaluate \
-  --path submissions/<repo-pack>/<mode>/<submission-id> --json
+  --path submissions/<subnet-pack>/<mode>/<submission-id> --json
 ```
 
 For the current live design:
@@ -163,7 +166,7 @@ Kata checks that with:
 
 ```bash
 uv run kata submission verify \
-  --path submissions/<repo-pack>/<mode>/<submission-id> \
+  --path submissions/<subnet-pack>/<mode>/<submission-id> \
   --challenge-run runs/<challenge-run>/challenge_summary.json
 ```
 
@@ -184,7 +187,7 @@ After verification, Kata reduces the result to one PR action:
 
 ```bash
 uv run kata submission decide \
-  --path submissions/<repo-pack>/<mode>/<submission-id> \
+  --path submissions/<subnet-pack>/<mode>/<submission-id> \
   --challenge-run runs/<challenge-run>/challenge_summary.json
 ```
 
@@ -209,7 +212,7 @@ uv run kata king promote \
 The production bot does more than promotion:
 
 1. merge the winning PR
-2. update the king under `kings/<repo-pack>/<mode>/`
+2. update the king under `kings/<subnet-pack>/<mode>/`
 3. update the lane king state
 4. clear the merged `submissions/.../<submission-id>/` directory from `main`
 

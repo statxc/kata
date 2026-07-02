@@ -478,7 +478,7 @@ def resolve_sn60_king_artifact(metadata: SubmissionMetadata) -> tuple[str, str]:
     if not (king_root / SUBMISSION_AGENT_FILENAME).exists():
         raise ValueError(
             f"SN60 lane king artifact is not seeded: {king_root}. "
-            "Seed the current king under kings/<repo-pack>/<mode>/ before running duels."
+            "Seed the current king under kings/<subnet-pack>/<mode>/ before running duels."
         )
     return entry.lane_id, str(king_root)
 
@@ -509,7 +509,7 @@ def inspect_pull_request(
     if not candidate_dirs:
         reasons.append(
             "PR does not contain an agent submission under "
-            "`submissions/<repo-pack>/<mode>/<submission-id>`."
+            "`submissions/<subnet-pack>/<mode>/<submission-id>`."
         )
         return PullRequestInspectionResult(
             action=PR_ACTION_CLOSE_INVALID,
@@ -813,7 +813,7 @@ def render_submission_validation(result: SubmissionValidationResult) -> str:
     lines: list[str] = []
     lines.append(f"Submission: {result.submission_path}")
     if result.repo_pack:
-        lines.append(f"Repo pack: {result.repo_pack}")
+        lines.append(f"Subnet pack: {result.repo_pack}")
     if result.mode:
         lines.append(f"Mode: {result.mode}")
     if result.submission_id:
@@ -853,7 +853,7 @@ def render_submission_verification(result: SubmissionVerificationResult) -> str:
     lines: list[str] = []
     lines.append(f"Submission: {result.submission_path}")
     lines.append(f"Challenge summary: {result.challenge_summary_path}")
-    lines.append(f"Repo pack: {result.repo_pack}")
+    lines.append(f"Subnet pack: {result.repo_pack}")
     lines.append(f"Mode: {result.mode}")
     lines.append(f"Submission id: {result.submission_id}")
     lines.append(
@@ -904,8 +904,12 @@ def render_submission_json(
     | SubmissionDecisionResult,
 ) -> str:
     payload = asdict(value)
+    if payload.get("repo_pack") is not None:
+        payload["subnet_pack"] = payload["repo_pack"]
     metadata = payload.get("metadata")
     if isinstance(metadata, dict):
+        if metadata.get("repo_pack") is not None:
+            metadata["subnet_pack"] = metadata["repo_pack"]
         payload["metadata"] = metadata
     return json.dumps(payload, indent=2) + "\n"
 
@@ -969,7 +973,7 @@ def validate_submission_metadata(
         )
     if metadata.repo_pack != descriptor.repo_pack:
         reasons.append(
-            "submission.json repo_pack does not match the submission path."
+            "submission.json subnet_pack does not match the submission path."
         )
     if metadata.mode != descriptor.mode:
         reasons.append("submission.json mode does not match the submission path.")
@@ -1113,7 +1117,7 @@ def resolve_submission_descriptor(
     if len(parts) < 4 or parts[0] != SUBMISSIONS_DIRNAME:
         reasons.append(
             "Submission path must match "
-            "`submissions/<repo-pack>/<mode>/<submission-id>`."
+            "`submissions/<subnet-pack>/<mode>/<submission-id>`."
         )
         return None, reasons
 
@@ -1146,7 +1150,7 @@ def load_submission_metadata(path: Path) -> SubmissionMetadata:
     try:
         return SubmissionMetadata(
             schema_version=int(payload["schema_version"]),
-            repo_pack=str(payload["repo_pack"]),
+            repo_pack=read_submission_subnet_pack(payload),
             mode=str(payload["mode"]),
             submission_id=str(payload["submission_id"]),
             created_at=str(payload["created_at"]),
@@ -1160,8 +1164,17 @@ def load_submission_metadata(path: Path) -> SubmissionMetadata:
         ) from exc
 
 
+def read_submission_subnet_pack(payload: dict[str, object]) -> str:
+    value = payload.get("subnet_pack", payload.get("repo_pack"))
+    if value is None:
+        raise KeyError("subnet_pack")
+    return str(value)
+
+
 def write_submission_metadata(path: Path, metadata: SubmissionMetadata) -> None:
-    path.write_text(json.dumps(asdict(metadata), indent=2) + "\n", encoding="utf-8")
+    payload = asdict(metadata)
+    payload["subnet_pack"] = payload.pop("repo_pack")
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def validate_submission_mode(mode: str) -> None:

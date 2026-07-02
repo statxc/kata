@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -209,6 +210,32 @@ def test_load_lane_metadata_requires_boolean_active_field(tmp_path: Path) -> Non
         load_lane_metadata("sn60__bitsec", public_root=str(tmp_path))
 
 
+def test_load_lane_metadata_accepts_subnet_pack_field(tmp_path: Path) -> None:
+    lane_root = resolve_lane_root("sn60__bitsec", public_root=str(tmp_path))
+    lane_root.mkdir(parents=True, exist_ok=True)
+    (lane_root / "lane.json").write_text(
+        """
+{
+  "schema_version": 1,
+  "lane_id": "sn60__bitsec",
+  "subnet_pack": "sn60__bitsec",
+  "mode": "miner",
+  "evaluator_id": "sn60_bitsec",
+  "evaluator_policy_version": "v1",
+  "active": true,
+  "created_at": "2026-07-01T00:00:00+00:00",
+  "updated_at": "2026-07-01T00:00:00+00:00"
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    metadata = load_lane_metadata("sn60__bitsec", public_root=str(tmp_path))
+
+    assert metadata.repo_pack == "sn60__bitsec"
+
+
 def build_lane_metadata(
     lane_id: str,
     *,
@@ -235,6 +262,15 @@ def test_write_lane_metadata_registers_pack_in_central_registry(tmp_path: Path) 
     registry_path = pack_registry_path(public_root=str(tmp_path))
     assert registry_path == resolve_lanes_root(str(tmp_path)) / "registry.json"
     assert registry_path.exists()
+    lane_payload = json.loads(
+        (resolve_lane_root("sn60__bitsec", public_root=str(tmp_path)) / "lane.json")
+        .read_text(encoding="utf-8")
+    )
+    registry_payload = json.loads(registry_path.read_text(encoding="utf-8"))
+    assert lane_payload["subnet_pack"] == "sn60__bitsec"
+    assert "repo_pack" not in lane_payload
+    assert registry_payload["packs"][0]["subnet_pack"] == "sn60__bitsec"
+    assert "repo_pack" not in registry_payload["packs"][0]
 
     registry = load_pack_registry(public_root=str(tmp_path))
     assert registry.schema_version == PACK_REGISTRY_SCHEMA_VERSION

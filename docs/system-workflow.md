@@ -14,7 +14,7 @@ The live system is split across repos:
 - the central pack registry (`lanes/registry.json`) lists subnet packs and
   their evaluator adapter ids
 - each pack has isolated state under `lanes/<lane-id>/` and one current king
-  under `kings/<repo-pack>/<mode>/`
+  under `kings/<subnet-pack>/<mode>/`
 - the engine, bot, and board discover packs only through the registry
 
 ## From PR to king

@@ -92,6 +92,20 @@ def test_validate_submission_accepts_scoped_pr_changes(tmp_path, monkeypatch) ->
     assert result.off_scope_paths == []
 
 
+def test_validate_submission_accepts_subnet_pack_metadata_field(tmp_path, monkeypatch) -> None:
+    _, repo_root, submission_root = make_miner_submission(tmp_path, monkeypatch)
+    metadata_path = submission_root / "submission.json"
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert payload["subnet_pack"] == "sn60__bitsec"
+    assert "repo_pack" not in payload
+
+    result = validate_submission(str(submission_root), repo_root=str(repo_root))
+
+    assert result.is_valid
+    assert result.metadata is not None
+    assert result.metadata.repo_pack == "sn60__bitsec"
+
+
 def test_validate_submission_rejects_off_scope_pr_changes(tmp_path, monkeypatch) -> None:
     _, repo_root, submission_root = make_miner_submission(tmp_path, monkeypatch)
     rel = submission_root.relative_to(repo_root).as_posix()

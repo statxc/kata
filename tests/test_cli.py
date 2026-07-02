@@ -93,6 +93,35 @@ def test_lane_cli_registers_and_lists_packs(tmp_path: Path, capsys) -> None:
     assert json.loads(capsys.readouterr().out)["packs"] == []
 
 
+def test_lane_cli_accepts_subnet_pack_alias(tmp_path: Path, capsys) -> None:
+    assert (
+        main(
+            [
+                "lane",
+                "init",
+                "--lane-id",
+                "sn60__bitsec",
+                "--subnet-pack",
+                "sn60__bitsec",
+                "--evaluator-id",
+                "sn60_bitsec",
+                "--public-root",
+                str(tmp_path),
+                "--json",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert (
+        main(["lane", "list", "--public-root", str(tmp_path), "--json"])
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["packs"][0]["subnet_pack"] == "sn60__bitsec"
+
+
 def test_lane_cli_sync_registry_rebuilds_from_disk(tmp_path: Path, capsys) -> None:
     assert (
         main(

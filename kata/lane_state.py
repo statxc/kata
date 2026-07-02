@@ -136,7 +136,10 @@ def write_pack_registry(
     *,
     public_root: str | None = None,
 ) -> Path:
-    return write_json_dataclass(pack_registry_path(public_root=public_root), registry)
+    return write_json(
+        pack_registry_path(public_root=public_root),
+        serialize_pack_registry(registry),
+    )
 
 
 def upsert_pack_registry_entry(
@@ -226,7 +229,7 @@ def write_lane_metadata(
     public_root: str | None = None,
 ) -> Path:
     path = lane_metadata_path(metadata.lane_id, public_root=public_root)
-    written = write_json_dataclass(path, metadata)
+    written = write_json(path, serialize_lane_metadata(metadata))
     # The central pack registry is the only discovery source; keep it in sync
     # with every lane metadata write.
     upsert_pack_registry_entry(metadata, public_root=public_root)
@@ -377,6 +380,22 @@ def write_json_dataclass(path: Path, value) -> Path:
     return write_json(path, asdict(value))
 
 
+def serialize_pack_registry(registry: PackRegistry) -> dict[str, object]:
+    payload = asdict(registry)
+    packs = payload.get("packs")
+    if isinstance(packs, list):
+        for pack in packs:
+            if isinstance(pack, dict):
+                pack["subnet_pack"] = pack.pop("repo_pack")
+    return payload
+
+
+def serialize_lane_metadata(metadata: EvaluatorLaneMetadata) -> dict[str, object]:
+    payload = asdict(metadata)
+    payload["subnet_pack"] = payload.pop("repo_pack")
+    return payload
+
+
 def read_json(path: Path) -> dict[str, object]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -397,7 +416,7 @@ def parse_pack_registry(payload: dict[str, object]) -> PackRegistry:
         packs.append(
             PackRegistryEntry(
                 lane_id=lane_id,
-                repo_pack=str(entry["repo_pack"]),
+                repo_pack=read_subnet_pack_field(entry),
                 mode=str(entry["mode"]),
                 evaluator_id=str(entry["evaluator_id"]),
                 active=require_bool(entry["active"], field_name="active"),
@@ -416,7 +435,7 @@ def parse_lane_metadata(payload: dict[str, object]) -> EvaluatorLaneMetadata:
     return EvaluatorLaneMetadata(
         schema_version=int(payload["schema_version"]),
         lane_id=lane_id,
-        repo_pack=str(payload["repo_pack"]),
+        repo_pack=read_subnet_pack_field(payload),
         mode=str(payload["mode"]),
         evaluator_id=str(payload["evaluator_id"]),
         evaluator_policy_version=str(payload["evaluator_policy_version"]),
@@ -523,6 +542,13 @@ def float_list_map(value: dict[str, object]) -> dict[str, list[float]]:
 def optional_string(value: object) -> str | None:
     if value is None:
         return None
+    return str(value)
+
+
+def read_subnet_pack_field(payload: dict[str, object]) -> str:
+    value = payload.get("subnet_pack", payload.get("repo_pack"))
+    if value is None:
+        raise KeyError("subnet_pack")
     return str(value)
 
 

@@ -38,7 +38,7 @@ from kata.submissions import (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="kata",
-        description="Initialize and evaluate repo-specific coding-agent competition lanes.",
+        description="Initialize and evaluate subnet-pack coding-agent competition lanes.",
     )
     parser.add_argument("--version", action="version", version="kata 0.1.0")
 
@@ -62,7 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--submission-path",
         default=None,
         help=(
-            "Optional path to submissions/<repo-pack>/<mode>/<submission-id>. "
+            "Optional path to submissions/<subnet-pack>/<mode>/<submission-id>. "
             "Defaults to the candidate artifact recorded in the challenge summary."
         ),
     )
@@ -71,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Optional public Kata repo root used to publish the visible king mirror "
-            "under `kings/<repo-pack>/<mode>/`. Defaults to the current working directory."
+            "under `kings/<subnet-pack>/<mode>/`. Defaults to the current working directory."
         ),
     )
     king_promote.add_argument("--json", action="store_true")
@@ -88,7 +88,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Create or update an evaluator-backed lane and register it in the pack registry.",
     )
     lane_init.add_argument("--lane-id", required=True, help="Lane id, e.g. sn60__bitsec.")
-    lane_init.add_argument("--repo-pack", default=None, help="Repo pack id. Defaults to lane id.")
+    lane_init.add_argument(
+        "--subnet-pack",
+        dest="repo_pack",
+        default=None,
+        help="Subnet pack id. Defaults to lane id.",
+    )
+    lane_init.add_argument(
+        "--repo-pack",
+        dest="repo_pack",
+        default=None,
+        help="Deprecated alias for --subnet-pack.",
+    )
     lane_init.add_argument("--mode", default="miner", help="Submission mode for the lane.")
     lane_init.add_argument(
         "--evaluator-id",
@@ -154,7 +165,17 @@ def build_parser() -> argparse.ArgumentParser:
         "init",
         help="Scaffold a challenger agent submission.",
     )
-    submission_init.add_argument("--repo-pack", required=True, help="Target repo pack id.")
+    submission_pack = submission_init.add_mutually_exclusive_group(required=True)
+    submission_pack.add_argument(
+        "--subnet-pack",
+        dest="repo_pack",
+        help="Target subnet pack id.",
+    )
+    submission_pack.add_argument(
+        "--repo-pack",
+        dest="repo_pack",
+        help="Deprecated alias for --subnet-pack.",
+    )
     submission_init.add_argument(
         "--mode",
         choices=sorted(SUPPORTED_SUBMISSION_MODES),
@@ -190,7 +211,7 @@ def build_parser() -> argparse.ArgumentParser:
     submission_validate.add_argument(
         "--path",
         required=True,
-        help="Path to submissions/<repo-pack>/<mode>/<submission-id>.",
+        help="Path to submissions/<subnet-pack>/<mode>/<submission-id>.",
     )
     submission_validate.add_argument(
         "--changed-path",
@@ -249,7 +270,7 @@ def build_parser() -> argparse.ArgumentParser:
     submission_evaluate.add_argument(
         "--path",
         required=True,
-        help="Path to submissions/<repo-pack>/<mode>/<submission-id>.",
+        help="Path to submissions/<subnet-pack>/<mode>/<submission-id>.",
     )
     submission_evaluate.add_argument(
         "--output-root",
@@ -297,7 +318,7 @@ def build_parser() -> argparse.ArgumentParser:
     submission_verify.add_argument(
         "--path",
         required=True,
-        help="Path to submissions/<repo-pack>/<mode>/<submission-id>.",
+        help="Path to submissions/<subnet-pack>/<mode>/<submission-id>.",
     )
     submission_verify.add_argument(
         "--challenge-run",
@@ -318,7 +339,7 @@ def build_parser() -> argparse.ArgumentParser:
     submission_decide.add_argument(
         "--path",
         required=True,
-        help="Path to submissions/<repo-pack>/<mode>/<submission-id>.",
+        help="Path to submissions/<subnet-pack>/<mode>/<submission-id>.",
     )
     submission_decide.add_argument(
         "--challenge-run",
@@ -506,6 +527,7 @@ def handle_lane_list(args: argparse.Namespace) -> int:
                 "packs": [
                     {
                         "lane_id": pack.lane_id,
+                        "subnet_pack": pack.repo_pack,
                         "repo_pack": pack.repo_pack,
                         "mode": pack.mode,
                         "evaluator_id": pack.evaluator_id,

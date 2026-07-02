@@ -5,7 +5,7 @@ packs, registered on GitTensor for reward distribution.
 
 One shared engine runs the same king-vs-candidate loop on every active subnet
 pack. Each pack keeps its own benchmark definition, scoring rules, and current
-king, isolated under `lanes/<lane-id>/` and `kings/<repo-pack>/<mode>/`.
+king, isolated under `lanes/<lane-id>/` and `kings/<subnet-pack>/<mode>/`.
 
 The first active pack is the SN60 / Bitsec security-agent lane
 (`sn60__bitsec/miner`): miners submit an `agent.py` exposing `agent_main()`
@@ -15,7 +15,7 @@ projects, evaluated in the pinned Bitsec sandbox mirror.
 ## How It Works
 
 1. A miner opens a PR that adds exactly one submission bundle under
-   `submissions/<repo-pack>/<mode>/<submission-id>/`.
+   `submissions/<subnet-pack>/<mode>/<submission-id>/`.
 2. `kata-bot` inspects and validates the PR shape, then asks Kata to
    evaluate it.
 3. Kata screens the candidate (static checks plus one sandbox execution),
@@ -25,7 +25,7 @@ projects, evaluated in the pinned Bitsec sandbox mirror.
    second, true positives third. Candidates with invalid replica runs never
    promote.
 5. Verified winners are merged, labeled for GitTensor rewards, published to
-   `kings/<repo-pack>/<mode>/`, and recorded in the lane state.
+   `kings/<subnet-pack>/<mode>/`, and recorded in the lane state.
 
 ## Repo Layout
 
@@ -48,7 +48,7 @@ uv run kata lane init --lane-id sn60__bitsec --evaluator-id sn60_bitsec
 uv run kata lane list --active-only
 
 # scaffold and validate a miner submission
-uv run kata submission init --repo-pack sn60__bitsec --mode miner --submission-id you-20260702-01
+uv run kata submission init --subnet-pack sn60__bitsec --mode miner --submission-id you-20260702-01
 uv run kata submission validate --path submissions/sn60__bitsec/miner/you-20260702-01
 
 # run a duel (requires Docker, the pinned sandbox, and project keys)

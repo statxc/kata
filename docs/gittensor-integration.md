@@ -9,9 +9,9 @@ adapter between those systems is:
 2. `kata-bot` closes invalid, losing, and stale PRs.
 3. `kata-bot` merges only confirmed promotion winners.
 4. Before merging a winner, `kata-bot` applies trusted labels:
-   - `kata:winner:<repo-pack>`
+   - `kata:winner:<subnet-pack>`
    - `kata:mode:<mode>`
-5. GitTensor rewards only merged PRs with a trusted repo-pack winner label.
+5. GitTensor rewards only merged PRs with a trusted subnet-pack winner label.
 
 This means GitTensor rewards promotion events, not raw PR size. Time decay in
 GitTensor then approximates current-king rewards: newer king promotions retain
@@ -58,7 +58,7 @@ Use this shape in GitTensor's `master_repositories.json`, replacing
 ```
 
 For lane-weighted rewards, replace the generic wildcard multiplier with
-specific repo-pack multipliers:
+specific subnet-pack multipliers:
 
 ```json
 "label_multipliers": {
@@ -69,7 +69,7 @@ specific repo-pack multipliers:
 ```
 
 GitTensor resolves the highest matching label multiplier, so specific
-repo-pack labels can override the fallback wildcard.
+subnet-pack labels can override the fallback wildcard.
 
 ## Operational Rules
 
