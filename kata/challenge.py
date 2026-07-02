@@ -4,6 +4,7 @@ import json
 import secrets
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 
 from kata.agent_bundle import AGENT_ENTRY_FILENAME, load_bundle_files
@@ -11,6 +12,14 @@ from kata.benchmarks import resolve_eval_pack_path, resolve_private_eval_pack_pa
 from kata.config import resolve_validator_model
 from kata.eval_pack import discover_live_eval_pack_tasks
 from kata.eval_runner import ArtifactVariant, EvalRunSummary, run_artifact_variants
+from kata.evaluators.sn60_bitsec import (
+    DEFAULT_REPLICAS_PER_PROJECT,
+    Sn60DuelSummary,
+    Sn60EvaluationHook,
+    Sn60ExecutionHook,
+    Sn60VariantSummary,
+    run_sn60_bitsec_duel,
+)
 from kata.frontier import (
     DEFAULT_PROMOTION_MARGIN_POINTS,
     PRIMARY_SELECTION_RANDOM_LIVE,
@@ -19,11 +28,22 @@ from kata.frontier import (
     load_frontier_manifest,
     resolve_frontier_artifact_hash,
 )
+from kata.lane_state import (
+    CHALLENGE_STATE_SCHEMA_VERSION,
+    PROMOTION_RECORD_SCHEMA_VERSION,
+    ChallengeState,
+    PromotionRecord,
+    write_challenge_state,
+    write_promotion_record,
+)
 from kata.live_progress import update_live_status
 from kata.provenance import EVALUATOR_VERSION, pool_fingerprint, short_hash
 from kata.public_artifacts import resolve_artifact_path
 
 SUBMISSION_METADATA_FILENAME = "submission.json"
+SN60_MINER_LANE_ID = "sn60__bitsec"
+SN60_MINER_MODE = "miner"
+SN60_VALIDATOR_MODEL = "sn60-bitsec-sandbox"
 
 
 @dataclass(frozen=True)
@@ -59,6 +79,13 @@ class ChallengeSummary:
     holdout: ChallengePoolSummary | None
     promotion_ready: bool
     promotion_reason: str
+
+
+@dataclass(frozen=True)
+class Sn60PromotionDecision:
+    promotion_ready: bool
+    final_winner: str
+    reason: str
 
 
 def run_frontier_challenge(
@@ -250,6 +277,268 @@ def run_frontier_challenge(
         }
     )
     return summary
+
+
+def run_sn60_challenge(
+    *,
+    frontier_artifact_path: str,
+    candidate_artifact_path: str,
+    project_keys: list[str],
+    candidate_submission_id: str,
+    lane_id: str = SN60_MINER_LANE_ID,
+    output_root: str | None = None,
+    replicas_per_project: int = DEFAULT_REPLICAS_PER_PROJECT,
+    sandbox_root: str | None = None,
+    benchmark_file: str | None = None,
+    sandbox_commit: str | None = None,
+    screening_result: dict[str, object] | None = None,
+    public_root: str | None = None,
+    execution_hook: Sn60ExecutionHook | None = None,
+    evaluation_hook: Sn60EvaluationHook | None = None,
+) -> ChallengeSummary:
+    duel_summary = run_sn60_bitsec_duel(
+        frontier_artifact_path=frontier_artifact_path,
+        candidate_artifact_path=candidate_artifact_path,
+        project_keys=project_keys,
+        output_root=output_root,
+        replicas_per_project=replicas_per_project,
+        sandbox_root=sandbox_root,
+        benchmark_file=benchmark_file,
+        sandbox_commit=sandbox_commit,
+        execution_hook=execution_hook,
+        evaluation_hook=evaluation_hook,
+    )
+    summary = sn60_duel_to_challenge_summary(
+        duel_summary,
+        lane_id=lane_id,
+        screening_result=screening_result or {"status": "passed"},
+    )
+    challenge_summary_path = Path(duel_summary.output_root) / "challenge_summary.json"
+    write_challenge_summary(challenge_summary_path, summary)
+    record_sn60_lane_provenance(
+        lane_id=lane_id,
+        candidate_submission_id=candidate_submission_id,
+        duel_summary=duel_summary,
+        screening_result=screening_result or {"status": "passed"},
+        public_root=public_root,
+    )
+    return summary
+
+
+def sn60_duel_to_challenge_summary(
+    duel_summary: Sn60DuelSummary,
+    *,
+    lane_id: str = SN60_MINER_LANE_ID,
+    screening_result: dict[str, object] | None = None,
+) -> ChallengeSummary:
+    decision = evaluate_sn60_promotion(
+        frontier=duel_summary.frontier,
+        candidate=duel_summary.candidate,
+        screening_result=screening_result,
+    )
+    freshness_fingerprint = sn60_freshness_fingerprint(duel_summary)
+    duel_summary_path = Path(duel_summary.output_root) / "duel_summary.json"
+    return ChallengeSummary(
+        schema_version=4,
+        run_id=duel_summary.run_id,
+        manifest_path=str(duel_summary_path),
+        mode=SN60_MINER_MODE,
+        evaluator_version=sn60_evaluator_version(duel_summary),
+        validator_model=SN60_VALIDATOR_MODEL,
+        frontier_artifact=duel_summary.frontier.artifact_path,
+        candidate_artifact=duel_summary.candidate.artifact_path,
+        frontier_artifact_hash=duel_summary.frontier.artifact_hash,
+        candidate_artifact_hash=duel_summary.candidate.artifact_hash,
+        primary_pool_fingerprint=freshness_fingerprint,
+        holdout_pool_fingerprint=None,
+        promotion_margin_points=0.0,
+        holdout_promotion_margin_points=0.0,
+        created_at=duel_summary.created_at,
+        primary=sn60_duel_to_pool_summary(duel_summary, eval_run_summary=duel_summary_path),
+        holdout=None,
+        promotion_ready=decision.promotion_ready,
+        promotion_reason=f"{lane_id}: {decision.reason}",
+    )
+
+
+def sn60_duel_to_pool_summary(
+    duel_summary: Sn60DuelSummary,
+    *,
+    eval_run_summary: Path,
+) -> ChallengePoolSummary:
+    frontier_score = round(duel_summary.frontier.average_score * 100, 2)
+    candidate_score = round(duel_summary.candidate.average_score * 100, 2)
+    decision = evaluate_sn60_promotion(
+        frontier=duel_summary.frontier,
+        candidate=duel_summary.candidate,
+    )
+    return ChallengePoolSummary(
+        task_ids=list(duel_summary.project_keys),
+        eval_run_summary=str(eval_run_summary),
+        total_task_weight=float(len(duel_summary.project_keys) * duel_summary.replicas_per_project),
+        variant_successes={
+            "frontier": duel_summary.frontier.pass_count,
+            "candidate": duel_summary.candidate.pass_count,
+        },
+        variant_invalid_tasks={
+            "frontier": duel_summary.frontier.invalid_runs,
+            "candidate": duel_summary.candidate.invalid_runs,
+        },
+        variant_scores={
+            "frontier": frontier_score,
+            "candidate": candidate_score,
+        },
+        candidate_beats_frontier=decision.final_winner == "candidate",
+        candidate_score_delta=round(candidate_score - frontier_score, 2),
+    )
+
+
+def evaluate_sn60_promotion(
+    *,
+    frontier: Sn60VariantSummary,
+    candidate: Sn60VariantSummary,
+    screening_result: dict[str, object] | None = None,
+) -> Sn60PromotionDecision:
+    screening_status = screening_result.get("status") if screening_result is not None else None
+    if screening_result is not None and screening_status not in {"passed", "pass", True}:
+        return Sn60PromotionDecision(
+            promotion_ready=False,
+            final_winner="frontier",
+            reason="candidate failed SN60 screening",
+        )
+    if candidate.invalid_runs > 0:
+        return Sn60PromotionDecision(
+            promotion_ready=False,
+            final_winner="frontier",
+            reason="candidate has invalid SN60 replica runs",
+        )
+
+    candidate_rank = sn60_variant_rank(candidate)
+    frontier_rank = sn60_variant_rank(frontier)
+    if candidate_rank <= frontier_rank:
+        return Sn60PromotionDecision(
+            promotion_ready=False,
+            final_winner="frontier",
+            reason="candidate did not beat the current SN60 king",
+        )
+    return Sn60PromotionDecision(
+        promotion_ready=True,
+        final_winner="candidate",
+        reason="candidate beat the current SN60 king",
+    )
+
+
+def sn60_variant_rank(summary: Sn60VariantSummary) -> tuple[float, int, int, int]:
+    return (
+        round(summary.average_score, 8),
+        summary.pass_count,
+        summary.true_positives,
+        -summary.invalid_runs,
+    )
+
+
+def record_sn60_lane_provenance(
+    *,
+    lane_id: str,
+    candidate_submission_id: str,
+    duel_summary: Sn60DuelSummary,
+    screening_result: dict[str, object],
+    public_root: str | None = None,
+    reward_label_applied: str | None = None,
+) -> tuple[Path, Path]:
+    decision = evaluate_sn60_promotion(
+        frontier=duel_summary.frontier,
+        candidate=duel_summary.candidate,
+        screening_result=screening_result,
+    )
+    freshness_fingerprint = sn60_freshness_fingerprint(duel_summary)
+    challenge_path = write_challenge_state(
+        lane_id,
+        ChallengeState(
+            schema_version=CHALLENGE_STATE_SCHEMA_VERSION,
+            candidate_submission_id=candidate_submission_id,
+            candidate_artifact_hash=duel_summary.candidate.artifact_hash,
+            king_artifact_hash=duel_summary.frontier.artifact_hash,
+            screening_result=screening_result,
+            selected_project_keys=list(duel_summary.project_keys),
+            validator_replica_count=duel_summary.replicas_per_project,
+            run_ids=[duel_summary.run_id],
+            freshness_fingerprint=freshness_fingerprint,
+            updated_at=datetime.now(UTC).isoformat(),
+        ),
+        public_root=public_root,
+    )
+    promotion_path = write_promotion_record(
+        lane_id,
+        PromotionRecord(
+            schema_version=PROMOTION_RECORD_SCHEMA_VERSION,
+            final_metrics=sn60_final_metrics(duel_summary, decision),
+            local_replica_scores=sn60_local_replica_scores(duel_summary),
+            pass_counts={
+                "frontier": duel_summary.frontier.pass_count,
+                "candidate": duel_summary.candidate.pass_count,
+            },
+            true_positives={
+                "frontier": duel_summary.frontier.true_positives,
+                "candidate": duel_summary.candidate.true_positives,
+            },
+            invalid_runs={
+                "frontier": duel_summary.frontier.invalid_runs,
+                "candidate": duel_summary.candidate.invalid_runs,
+            },
+            final_winner=decision.final_winner,
+            reward_label_applied=reward_label_applied,
+            recorded_at=datetime.now(UTC).isoformat(),
+        ),
+        public_root=public_root,
+    )
+    return challenge_path, promotion_path
+
+
+def sn60_final_metrics(
+    duel_summary: Sn60DuelSummary,
+    decision: Sn60PromotionDecision,
+) -> dict[str, object]:
+    return {
+        "run_id": duel_summary.run_id,
+        "promotion_ready": decision.promotion_ready,
+        "promotion_reason": decision.reason,
+        "frontier_average_score": duel_summary.frontier.average_score,
+        "candidate_average_score": duel_summary.candidate.average_score,
+        "candidate_score_delta": (
+            duel_summary.candidate.average_score - duel_summary.frontier.average_score
+        ),
+        "sandbox_commit": duel_summary.sandbox_source.sandbox_commit,
+        "benchmark_sha256": duel_summary.sandbox_source.benchmark_sha256,
+        "scorer_version": duel_summary.sandbox_source.scorer_version,
+    }
+
+
+def sn60_local_replica_scores(duel_summary: Sn60DuelSummary) -> dict[str, list[float]]:
+    return {
+        "frontier": [result.score for result in duel_summary.frontier.replica_results],
+        "candidate": [result.score for result in duel_summary.candidate.replica_results],
+    }
+
+
+def sn60_freshness_fingerprint(duel_summary: Sn60DuelSummary) -> str:
+    payload = {
+        "frontier_artifact_hash": duel_summary.frontier.artifact_hash,
+        "candidate_artifact_hash": duel_summary.candidate.artifact_hash,
+        "project_keys": duel_summary.project_keys,
+        "replicas_per_project": duel_summary.replicas_per_project,
+        "sandbox_commit": duel_summary.sandbox_source.sandbox_commit,
+        "benchmark_sha256": duel_summary.sandbox_source.benchmark_sha256,
+        "scorer_version": duel_summary.sandbox_source.scorer_version,
+    }
+    return sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def sn60_evaluator_version(duel_summary: Sn60DuelSummary) -> str:
+    return (
+        f"{duel_summary.sandbox_source.scorer_version}"
+        f"@{short_hash(duel_summary.sandbox_source.sandbox_commit)}"
+    )
 
 
 def queued_pool_status(pool_name: str, task_ids: list[str]) -> dict[str, object]:
