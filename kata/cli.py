@@ -365,15 +365,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 def handle_king_promote(args: argparse.Namespace) -> int:
     summary = load_challenge_summary(args.challenge_run)
+    # Default to None (not cwd) so promotion resolves the public root the same
+    # way `verify`/`decide`/`evaluate` do — honoring KATA_ROOT — instead of
+    # silently writing kings/ + lane state into whatever directory it's run in.
     public_root = (
-        Path(args.public_root).expanduser().resolve()
+        str(Path(args.public_root).expanduser().resolve())
         if args.public_root
-        else Path.cwd().resolve()
+        else None
     )
     result = promote_submission_result(
         args.submission_path or summary.candidate_artifact,
         args.challenge_run,
-        public_root=str(public_root),
+        public_root=public_root,
     )
     if args.json:
         print_json(

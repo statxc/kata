@@ -664,7 +664,17 @@ def build_default_execution_hook(source: Sn60SandboxSource) -> Sn60ExecutionHook
         )
         report_path = Path(context.report_path)
         if report_path.exists():
-            return json.loads(report_path.read_text(encoding="utf-8"))
+            # report.json is written inside the agent container, which mounts
+            # the reports dir read-write — its contents are untrusted. A
+            # malformed/non-object report is an agent fault (recorded as a
+            # failed replica), never a reason to crash the whole duel.
+            return _read_untrusted_report_json(
+                report_path,
+                failure={
+                    "success": False,
+                    "error": "SN60 execution report is not a valid JSON object.",
+                },
+            )
         return {
             "success": False,
             "error": (
@@ -674,6 +684,20 @@ def build_default_execution_hook(source: Sn60SandboxSource) -> Sn60ExecutionHook
         }
 
     return _execute
+
+
+def _read_untrusted_report_json(
+    path: Path, *, failure: dict[str, object]
+) -> dict[str, object]:
+    """Read an agent-writable JSON report, returning `failure` (with the parse
+    error appended) instead of raising on malformed or non-object content."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+        return {**failure, "error": f"{failure['error']} ({exc})"}
+    if not isinstance(payload, dict):
+        return failure
+    return payload
 
 
 def build_default_evaluation_hook(source: Sn60SandboxSource) -> Sn60EvaluationHook:
@@ -709,7 +733,14 @@ def build_default_evaluation_hook(source: Sn60SandboxSource) -> Sn60EvaluationHo
                 pass
         evaluation_path = Path(context.evaluation_path)
         if evaluation_path.exists():
-            return json.loads(evaluation_path.read_text(encoding="utf-8"))
+            # Same reports dir is agent-writable, so guard this parse too.
+            return _read_untrusted_report_json(
+                evaluation_path,
+                failure={
+                    "status": "error",
+                    "error": "SN60 evaluation output is not a valid JSON object.",
+                },
+            )
         return {
             "status": "error",
             "error": (

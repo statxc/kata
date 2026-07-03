@@ -33,6 +33,7 @@ from kata.challenge import (
 from kata.evaluators.sn60_bitsec import (
     DEFAULT_REPLICAS_PER_PROJECT,
     SN60_BITSEC_EVALUATOR_ID,
+    hash_bundle_root,
     load_sn60_benchmark_project_keys,
     resolve_sn60_sandbox_source,
 )
@@ -808,21 +809,23 @@ def promote_lane_king(
     summary: ChallengeSummary,
     public_root: str | None = None,
 ):
-    king_root = publish_public_king(
+    published = publish_public_king(
         public_root=str(resolve_kata_root(public_root)),
         repo_pack=verification.repo_pack,
         mode=verification.mode,
         submission_id=verification.submission_id,
         challenge_run_id=summary.run_id,
         candidate_artifact_path=verification.submission_path,
-        king_artifact_hash=verification.candidate_artifact_hash,
         candidate_artifact_hash=verification.candidate_artifact_hash,
+        # Hash the published king the same way a later duel will, so
+        # king_is_current stays true even for non-normalized submissions.
+        artifact_hasher=hash_bundle_root,
     )
     now = datetime.now(UTC).isoformat()
     king = LaneKingState(
         schema_version=KING_STATE_SCHEMA_VERSION,
         current_king_submission_id=verification.submission_id,
-        current_king_artifact_hash=verification.candidate_artifact_hash,
+        current_king_artifact_hash=published.king_artifact_hash,
         promotion_source_pr=None,
         promotion_timestamp=now,
         updated_at=now,
@@ -830,7 +833,7 @@ def promote_lane_king(
     write_lane_king_state(entry.lane_id, king, public_root=public_root)
     return LanePromotionResult(
         lane_id=entry.lane_id,
-        king_root=str(king_root),
+        king_root=str(published.king_root),
         king=king,
     )
 
@@ -908,18 +911,6 @@ def render_submission_decision(result: SubmissionDecisionResult) -> str:
     if result.reasons:
         lines.append("Reasons:")
         lines.extend(f"- {reason}" for reason in result.reasons)
-    return "\n".join(lines)
-
-
-def render_pr_comment(action: str, title: str, reasons: list[str]) -> str:
-    lines = [f"### {title}", ""]
-    if reasons:
-        lines.append("Reasons:")
-        lines.extend(f"- {reason}" for reason in reasons)
-    else:
-        lines.append("No additional reasons recorded.")
-    lines.append("")
-    lines.append(f"Action: `{action}`")
     return "\n".join(lines)
 
 
@@ -1085,10 +1076,11 @@ def find_evaluator_pack_entry(
     *,
     public_root: str | None = None,
 ) -> PackRegistryEntry | None:
-    try:
-        registry = load_pack_registry(public_root=public_root)
-    except ValueError:
-        return None
+    # A missing registry loads as empty (returns None below); a *corrupt* one
+    # must surface loudly. Swallowing the load error here would report every
+    # submission as "no lane registered" and auto-close PRs, hiding the real
+    # cause — a broken registry file.
+    registry = load_pack_registry(public_root=public_root)
     for pack in registry.packs:
         if pack.repo_pack == repo_pack and pack.mode == mode:
             return pack

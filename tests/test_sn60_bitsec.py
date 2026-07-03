@@ -401,6 +401,54 @@ def test_default_evaluation_hook_points_validator_dir_at_recorded_benchmark(
     ) == benchmark_path
 
 
+def _run_default_execution_hook_with_report(tmp_path, monkeypatch, source, report_text):
+    """Drive the default execution hook with the docker/subprocess edges mocked,
+    after the (untrusted) agent wrote `report_text` to report.json."""
+    from kata.evaluators import sn60_bitsec as sn60
+
+    context = _make_context(tmp_path, source)
+    Path(context.report_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(context.report_path).write_text(report_text, encoding="utf-8")
+
+    monkeypatch.setenv("INFERENCE_API_KEY", "run-token")
+    monkeypatch.setattr(sn60, "ensure_internal_agent_network", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, *a, **k: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
+    return sn60.build_default_execution_hook(source)(context)
+
+
+def test_malformed_agent_report_is_recorded_failure_not_a_crash(
+    tmp_path: Path, monkeypatch
+) -> None:
+    sandbox_root = tmp_path / "sandbox"
+    benchmark_path = write_sandbox_source(sandbox_root)
+    source = resolve_sn60_sandbox_source(
+        sandbox_root=str(sandbox_root),
+        benchmark_file=str(benchmark_path),
+        sandbox_commit="commit-1",
+        scorer_version="ScaBenchScorerV2",
+    )
+
+    # report.json is agent-writable and untrusted. Malformed JSON and a non-dict
+    # JSON must both degrade to a failed replica, never abort the whole duel.
+    for report_text in ("{not valid json", "[1, 2, 3]", "null"):
+        payload = _run_default_execution_hook_with_report(
+            tmp_path, monkeypatch, source, report_text
+        )
+        assert isinstance(payload, dict)
+        assert payload.get("success") is False
+        assert "error" in payload
+
+    # A well-formed object is still returned verbatim.
+    good = _run_default_execution_hook_with_report(
+        tmp_path, monkeypatch, source, '{"success": true, "report": {}}'
+    )
+    assert good == {"success": True, "report": {}}
+
+
 def test_project_passes_requires_two_of_three_runs() -> None:
     assert project_passes(pass_count=2, replica_count=3)
     assert project_passes(pass_count=3, replica_count=3)

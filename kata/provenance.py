@@ -4,18 +4,6 @@ from hashlib import sha256
 from pathlib import Path
 
 
-def sha256_text(value: str) -> str:
-    return sha256(value.encode("utf-8")).hexdigest()
-
-
-def sha256_file(path: str | Path) -> str:
-    return sha256_path(Path(path).expanduser().resolve())
-
-
-def sha256_path(path: Path) -> str:
-    return sha256(path.read_bytes()).hexdigest()
-
-
 def sha256_directory(root: str | Path, *, include: list[str] | None = None) -> str:
     root_path = Path(root).expanduser().resolve()
     relative_paths = include or [

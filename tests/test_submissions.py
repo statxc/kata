@@ -344,7 +344,7 @@ def seed_lane_king(public_root: Path, repo_pack: str) -> Path:
     return king_root
 
 
-def run_registry_lane_sn60_duel(tmp_path: Path, monkeypatch):
+def run_registry_lane_sn60_duel(tmp_path: Path, monkeypatch, *, agent_source=VALID_MINER_AGENT):
     public_root = tmp_path / "kata-root"
     write_evaluator_lane(public_root)
     monkeypatch.setenv("KATA_ROOT", str(public_root))
@@ -365,7 +365,7 @@ def run_registry_lane_sn60_duel(tmp_path: Path, monkeypatch):
         submission_id="alice-20260702-10",
         output_root=str(repo_root / "submissions"),
     )
-    (submission_root / "agent.py").write_text(VALID_MINER_AGENT, encoding="utf-8")
+    (submission_root / "agent.py").write_text(agent_source, encoding="utf-8")
 
     def execute(context):
         return {"success": True, "report": {"vulnerabilities": []}}
@@ -675,6 +675,41 @@ def test_verify_and_promote_sn60_registry_lane_end_to_end(
     # submission must fail validation as a copy of the current lane king.
     with pytest.raises(ValueError, match="exact copy of the current lane king"):
         verify_submission_result(str(submission_root), str(summary_path))
+
+
+def test_promote_records_published_king_hash_for_non_normalized_agent(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from kata.evaluators.sn60_bitsec import hash_bundle_root
+
+    # An agent.py WITHOUT a trailing newline: publishing normalizes it
+    # (write_bundle_files appends "\n"), so the published king bytes differ
+    # from the submitted bytes. The recorded king hash must match the PUBLISHED
+    # bundle (what future duels hash), or every later duel sees
+    # king_is_current=False -> a permanent rerun-stale livelock.
+    non_normalized = (
+        "def agent_main(project_dir=None, inference_api=None):\n"
+        "    return {\"vulnerabilities\": []}"  # no trailing newline
+    )
+    assert not non_normalized.endswith("\n")
+
+    public_root, submission_root, _summary, summary_path = run_registry_lane_sn60_duel(
+        tmp_path, monkeypatch, agent_source=non_normalized
+    )
+    verification = verify_submission_result(str(submission_root), str(summary_path))
+    assert verification.promotion_ready
+
+    result = promote_submission_result(
+        str(submission_root), str(summary_path), public_root=str(public_root)
+    )
+    king_state = load_lane_king_state("sn60__bitsec", public_root=str(public_root))
+    published_king_root = public_root / "kings" / "sn60__bitsec" / "miner"
+
+    # The recorded hash equals the hash of the published king exactly as a duel
+    # would recompute it — so king_is_current holds on the next challenge.
+    assert king_state.current_king_artifact_hash == hash_bundle_root(published_king_root)
+    assert result.king.current_king_artifact_hash == hash_bundle_root(published_king_root)
 
 
 def test_verify_sn60_registry_lane_detects_stale_benchmark_snapshot(
