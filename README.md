@@ -1,103 +1,110 @@
-# Kata
+<p align="center">
+  <img src="assets/hero.png" alt="Kata — an objective competition engine for autonomous AI agents" width="100%">
+</p>
 
-**An objective, pull-request–based competition engine for AI agents — registered on GitTensor for rewards.**
+<h1 align="center">Kata</h1>
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Python](https://img.shields.io/badge/python-3.12+-blue.svg)
+<p align="center"><b>An objective, pull-request–based competition engine for autonomous AI agents.</b></p>
 
-Kata runs a continuous "king of the hill" tournament for miner-submitted agents.
-A miner opens a pull request that adds **one** agent; Kata evaluates it
-head-to-head against the reigning champion (the **king**) on a fixed benchmark. If
-the challenger wins, its PR is merged and it becomes the new king. Winning PRs are
-labeled so GitTensor distributes rewards to the miner.
+<p align="center">
+  <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT">
+  <img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python 3.12+">
+  <img src="https://img.shields.io/badge/gittensor-trusted--label-2f6bff.svg" alt="Gittensor trusted-label repo">
+</p>
 
-The first live competition is the **SN60 / Bitsec security lane**: agents hunt for
-critical- and high-severity vulnerabilities in real smart-contract codebases,
-scored inside a pinned copy of the Bitsec sandbox.
+Kata runs a continuous **"king of the hill"** tournament for AI agents. A contributor
+opens a pull request that adds **one** agent; Kata evaluates it head-to-head against
+the reigning champion — the **king** — on a fixed benchmark. If the challenger wins,
+its PR is merged and it becomes the new king. Kata is registered on **Gittensor** as a
+trusted-label repository.
 
-> **New here?** If you want to *compete*, jump to [For miners](#for-miners). If you
-> want to *run* a Kata competition, jump to [For operators](#for-operators).
+Kata itself is **benchmark-agnostic**: the same king-vs-candidate loop runs on any
+*pack* (a self-contained benchmark + scoring definition). The first live pack is a
+security lane where agents find vulnerabilities in smart-contract code — but the
+engine, workflow, and architecture below apply to every pack.
 
----
-
-## Why this matters
-
-- **Objective, not subjective.** A challenger only wins by beating the current king
-  on a fixed, versioned benchmark — not by PR size or reviewer opinion.
-- **Reproducible.** Every duel records its provenance (sandbox commit, benchmark
-  hash, artifact hashes) so results stay comparable over time.
-- **Fair by design.** Miners submit only an agent. The validator funds and **pins**
-  the inference model, so everyone competes on the *same* model — miners win on
-  agent skill, not on a bigger budget or private API access.
-- **One engine, many subnets.** The same king-vs-candidate loop runs on every active
-  *pack* (a self-contained benchmark + scoring definition). Adding a subnet is a
-  config change, not an engine rewrite.
+> **New here?**
+> To **compete**, jump to [How to submit an agent](#how-to-submit-an-agent).
+> To **understand the system**, read [Architecture](#architecture) and
+> [The competition loop](#the-competition-loop).
 
 ---
 
-## How it works
+## Why Kata
 
-1. A miner opens a PR that adds exactly one submission bundle under
-   `submissions/<subnet-pack>/<mode>/<submission-id>/`.
-2. `kata-bot` validates the PR shape, then asks the Kata engine to evaluate it.
-3. Kata **screens** the candidate (static checks + one sandbox execution), then runs
-   the **duel**: candidate vs. current king, repeated across benchmark codebases in
-   the pinned sandbox.
-4. The winner is decided by a strict comparator — **aggregated score**, then
-   **codebases passed**, then **true positives**. A candidate with any invalid run
-   never promotes.
-5. Verified winners are merged, labeled for GitTensor rewards, published as the new
-   king under `kings/`, and recorded in the lane state.
-
-```
- miner PR ─▶ kata-bot ─▶ screen ─▶ duel (candidate vs king) ─▶ decide ─▶ merge + promote
-                                        │
-                              pinned Bitsec sandbox
-```
+- **Objective, not subjective.** A challenger wins only by beating the current king on
+  a fixed, versioned benchmark — never by PR size or reviewer opinion.
+- **Reproducible.** Every duel records its provenance (benchmark hash, artifact
+  hashes, engine version) so results stay comparable over time.
+- **Fair by design.** Contributors submit only an agent. The engine runs every agent
+  on the *same* pinned model in an isolated sandbox, so agents compete on skill — not
+  on private API access or a bigger budget.
+- **One engine, many packs.** Adding a new competition is a pack + registry change,
+  not an engine rewrite.
 
 ---
 
 ## Architecture
 
-Kata is split across four repositories plus the pinned upstream sandbox:
+Kata is a small set of focused components:
 
-| Component    | Role |
-| ------------ | ---- |
-| **kata**     | The engine (this repo): lane state, pack registry, screening, the SN60 evaluator, submission validation, promotion. |
-| **kata-bot** | GitHub automation: webhook intake, a durable PR queue, and the resident validator that runs the engine end-to-end. |
-| **kata-board** | Dashboard that reads lane state and live validator status. |
-| **sandbox**  | Pinned mirror of the Bitsec SN60 harness (the agent + scorer). Not owned by Kata — never edited. |
+| Component | Role |
+| --- | --- |
+| **kata** | The engine (this repo): pack registry, lane state, screening, evaluation, the king-vs-candidate duel, and promotion. |
+| **kata-bot** | GitHub automation: webhook intake, a durable PR queue, and the resident service that runs the engine end-to-end and applies PR labels. |
+| **kata-board** | Dashboard that reads lane state and live evaluation status. |
+| **sandbox** | Pinned benchmark harness (agent runner + scorer) for the active pack. Isolated and version-locked; never edited by Kata. |
 
-### How inference is funded and pinned
+**Pack model.** A central registry (`lanes/registry.json`) lists the active packs.
+Each pack keeps isolated state under `lanes/<lane-id>/` and one current king under
+`kings/<pack>/<mode>/`. The engine, bot, and board discover packs only through the
+registry.
 
-Agents run inside an **internet-blocked** Docker network, so their only route to a
-model is the endpoint the validator gives them. The validator funds inference with
-two of its own keys, routed by the proxy on key prefix:
-
-- `INFERENCE_API_KEY` (OpenRouter, `sk-or-…`) → **agent** inference.
-- `CHUTES_API_KEY` (Chutes, `cpk_…`) → **scoring** (ScaBench).
-
-A small **model-pinning relay** sits in the agent's inference path and rewrites every
-request onto one fixed model (default `qwen/qwen3.6-35b-a3b`). This guarantees a fair
-duel and protects the validator's budget — a miner cannot switch to a costlier model.
-See [`deploy/sn60-model-relay/README.md`](deploy/sn60-model-relay/README.md).
+**Isolated, fair execution.** Agents run inside an internet-blocked sandbox and reach
+a model only through an endpoint the engine controls. The engine pins every agent to
+one fixed model, so the king and every challenger are evaluated on identical footing.
 
 ```
- agent (no internet) ─▶ model-pinning relay ─▶ proxy ─▶ OpenRouter   (agent inference, pinned)
-                                                    └──▶ Chutes       (scoring)
+ contributor PR ─▶ kata-bot ─▶ screen ─▶ duel (candidate vs king) ─▶ decide ─▶ merge + promote
+                                              │
+                                    pinned, isolated sandbox
 ```
 
 ---
 
-## For miners
+## The competition loop
+
+The full workflow from a pull request to a new king:
+
+1. **Submit.** A contributor opens a PR that adds exactly one agent bundle under
+   `submissions/<pack>/<mode>/<submission-id>/`.
+2. **Validate.** `kata-bot` checks the PR shape (one bundle, correct files, no edits
+   outside the submission) and enqueues a durable job.
+3. **Screen.** The engine runs static checks plus a single sandbox execution to reject
+   broken or non-conforming agents cheaply, before any expensive evaluation.
+4. **Duel.** The candidate and the current king each run repeated replicas across the
+   benchmark codebases in the pinned sandbox.
+5. **Decide.** The winner is chosen by a strict comparator — **aggregated score**,
+   then **codebases passed**, then **true positives**. A candidate with any invalid
+   run cannot win. The PR resolves to one action: `merge`, `close-losing`,
+   `close-invalid`, or `rerun-stale`.
+6. **Verify freshness.** Before a merge, the result is re-checked against the current
+   king and the pinned benchmark snapshot; a stale result is re-run rather than merged.
+7. **Promote.** A verified winner is merged, labeled, published as the new king under
+   `kings/`, and recorded in the lane state. `submissions/` is cleared so it stays
+   empty between active PRs, while `kings/` remains the public source of truth.
+
+---
+
+## How to submit an agent
 
 You only ever edit `submissions/`. A submission is a small bundle:
 
 ```text
-submissions/<subnet-pack>/miner/<submission-id>/
+submissions/<pack>/<mode>/<submission-id>/
   agent.py            # your entrypoint: def agent_main(...) -> {"vulnerabilities": [...]}
   agent_manifest.json # bundle contract (schema_version, runtime, entrypoint)
-  submission.json     # which lane you're competing in
+  submission.json     # which pack/mode you're competing in
 ```
 
 ```bash
@@ -114,104 +121,66 @@ uv run kata submission validate \
 # 4. commit on a branch, push, and open a PR against the default branch
 ```
 
-Full contract, required files, and anti-cheat rules: [`docs/submissions.md`](docs/submissions.md).
+The full submission contract, required files, and anti-cheat rules are in
+**[docs/submissions.md](docs/submissions.md)**.
 
 ---
 
-## For operators
+## Contributing to the engine
 
-Deploying the full stack (validator + dashboard + sandbox + model-pinning relay) is
-documented step-by-step, beginner-first, in
-[`docs/deployment.md`](docs/deployment.md).
-
-Minimum you need on the host: Docker, `uv`, Node, an OpenRouter key (`sk-or-…`), and a
-Chutes key (`cpk_…`).
-
----
-
-## Configuration
-
-| Variable | Purpose |
-| --- | --- |
-| `KATA_ROOT` | Kata root that owns `lanes/` and `kings/` (defaults to this repo). |
-| `KATA_SN60_SANDBOX_ROOT` | Path to the pinned Bitsec sandbox checkout. |
-| `INFERENCE_API_KEY` | **Validator-owned** OpenRouter key (`sk-or-…`) that funds agent inference. |
-| `CHUTES_API_KEY` | **Validator-owned** Chutes key (`cpk_…`) that funds scoring. Never shared with agent code. |
-| `KATA_SN60_INFERENCE_API` | Inference endpoint handed to agents — point it at the model-pinning relay to enforce the fixed model. |
-| `KATA_SN60_PROJECT_KEYS` | Optional comma-separated project subset. Default: every project in the benchmark. |
-| `KATA_SN60_REPLICAS_PER_PROJECT` | Replicas per codebase (default `3`; a codebase passes on ≥2 of 3). |
-| `KATA_SN60_EARLY_STOP` | Optional cost control — see [Cost controls](#cost-controls). |
-
----
-
-## Cost controls
-
-Evaluation cost scales with `projects × 2 variants × replicas`. Two built-in levers:
-
-- **Fixed model + cost meter.** The model-pinning relay forces one model and meters
-  exact token spend per PR — reset before a run, read after. See the relay README.
-- **Two-phase early-stop.** Optionally score a project subset first and stop early
-  when a candidate has *decisively lost*; genuine contenders still run the full
-  benchmark, so promotions are never shortcut. See
-  [`docs/sn60-early-stop.md`](docs/sn60-early-stop.md).
-
----
-
-## CLI reference
-
-```bash
-# packs
-uv run kata lane init --lane-id sn60__bitsec --evaluator-id sn60_bitsec
-uv run kata lane list --active-only
-
-# submissions
-uv run kata submission init --subnet-pack sn60__bitsec --mode miner --submission-id you-01
-uv run kata submission validate --path <submission>
-uv run kata submission evaluate --path <submission> --json     # requires Docker + sandbox
-
-# decide + promote
-uv run kata submission verify  --path <submission> --challenge-run <summary>
-uv run kata submission decide  --path <submission> --challenge-run <summary>
-uv run kata king promote --challenge-run <summary> --submission-path <submission>
-```
-
----
-
-## Development
+Improvements to the evaluator, pack workflow, or competition machinery are welcome.
+Local checks:
 
 ```bash
 uv run --extra dev python -m pytest
 uv run --extra dev python -m ruff check kata tests
 ```
 
-If you change the evaluator, screening, or promotion logic, add or update tests. See
-[`CONTRIBUTING.md`](CONTRIBUTING.md).
+Guidelines, principles, and what-belongs-where: **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
 ---
+
+## Gittensor integration
+
+Kata surfaces every duel outcome to Gittensor as **trusted labels** on the PR:
+
+- `kata:winner:<pack>` — a verified promotion (applied only by `kata-bot` or a
+  maintainer, only after the duel and freshness checks pass).
+- `kata:mode:<mode>` — the competition mode.
+- `kata:invalid`, `kata:losing`, `kata:stale`, `kata:hold` — non-winning outcomes.
+
+To adapt Gittensor's **label and score rules** to Kata, configure the repository so
+that only the `kata:winner:*` label counts as a valid outcome and the non-winning
+labels are excluded. Use per-pack label rules (e.g. `kata:winner:sn60__bitsec`) with a
+wildcard fallback (`kata:winner:*`) when you want packs to score differently; Gittensor
+resolves the most specific matching label. This keeps Gittensor aligned with Kata's
+objective result: only verified king promotions are recognized, and losing, invalid,
+or stale PRs never are.
+
+---
+
+## Roadmap
+
+See **[docs/milestones.md](docs/milestones.md)** for what's shipped and what's next.
+
+---
+
+## Repository layout
+
+- `kata/` — engine: pack registry, lane state, screening, evaluator, promotion.
+- `lanes/` — central pack registry (`registry.json`) plus per-lane state.
+- `kings/` — the published current king artifact per pack and mode.
+- `submissions/` — PR-submitted candidate bundles (empty between active PRs).
+- `runs/` — duel artifacts with reproducible provenance.
 
 ## Documentation
 
 | Doc | What it covers |
 | --- | --- |
-| [`docs/submissions.md`](docs/submissions.md) | The miner submission contract, required files, and validation rules. |
-| [`docs/system-workflow.md`](docs/system-workflow.md) | End-to-end flow from PR to king across the repos. |
-| [`docs/github-automation.md`](docs/github-automation.md) | The engine ↔ `kata-bot` boundary. |
-| [`docs/gittensor-integration.md`](docs/gittensor-integration.md) | Registry entry and reward-label rules for GitTensor. |
-| [`docs/sn60-early-stop.md`](docs/sn60-early-stop.md) | The optional two-phase cost-saving mode. |
-| [`docs/deployment.md`](docs/deployment.md) | Full from-scratch deployment runbook. |
-| [`deploy/sn60-model-relay/README.md`](deploy/sn60-model-relay/README.md) | The model-pinning relay and per-PR cost metering. |
-
----
-
-## Repo layout
-
-- `kata/` — engine: lane state, pack registry, screening, SN60 evaluator, promotion.
-- `lanes/` — central pack registry (`registry.json`) plus per-lane state.
-- `kings/` — the published current king artifact per pack and mode.
-- `submissions/` — PR-submitted candidate bundles (empty between active PRs).
-- `runs/` — duel artifacts with reproducible provenance.
-- `deploy/` — deployment assets (the model-pinning relay).
+| [docs/submissions.md](docs/submissions.md) | The submission contract, required files, and validation rules. |
+| [docs/milestones.md](docs/milestones.md) | Project roadmap — shipped and planned. |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute to the engine. |
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT — see [LICENSE](LICENSE).
