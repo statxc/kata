@@ -24,6 +24,8 @@ DEFAULT_SANDBOX_INFERENCE_API = "http://bitsec_proxy:8000"
 DEFAULT_EVAL_MAX_VULNS = 100
 DEFAULT_REPLICAS_PER_PROJECT = 3
 DEFAULT_BENCHMARK_FILENAME = "curated-highs-only-2025-08-08.json"
+DEFAULT_EXECUTION_SUBPROCESS_TIMEOUT_SECONDS = 35 * 60
+DEFAULT_EVALUATION_SUBPROCESS_TIMEOUT_SECONDS = 60 * 60
 # Phase-1 codebase-pass deficit at which a candidate is treated as a decisive loss.
 DEFAULT_EARLY_STOP_LOSS_MARGIN = 6
 
@@ -184,6 +186,18 @@ def _env_int(name: str, default: int) -> int:
             return int(value.strip())
         except ValueError:
             return default
+    return default
+
+
+def _env_positive_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value and value.strip():
+        try:
+            parsed = float(value.strip())
+        except ValueError:
+            return default
+        if parsed > 0:
+            return parsed
     return default
 
 
@@ -834,13 +848,23 @@ def build_default_execution_hook(source: Sn60SandboxSource) -> Sn60ExecutionHook
         env = {
             "INFERENCE_API_KEY": required_env("INFERENCE_API_KEY"),
         }
-        completed = subprocess.run(
-            command,
-            cwd=source.sandbox_root,
-            capture_output=True,
-            text=True,
-            env={**execution_subprocess_env(), **env},
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=source.sandbox_root,
+                capture_output=True,
+                text=True,
+                env={**execution_subprocess_env(), **env},
+                timeout=_env_positive_float(
+                    "KATA_SN60_EXECUTION_TIMEOUT_SECONDS",
+                    DEFAULT_EXECUTION_SUBPROCESS_TIMEOUT_SECONDS,
+                ),
+            )
+        except subprocess.TimeoutExpired as exc:
+            return {
+                "success": False,
+                "error": f"Bitsec execution command timed out after {exc.timeout} seconds.",
+            }
         report_path = Path(context.report_path)
         if report_path.exists():
             # report.json is written inside the agent container, which mounts
@@ -854,12 +878,17 @@ def build_default_execution_hook(source: Sn60SandboxSource) -> Sn60ExecutionHook
                     "error": "SN60 execution report is not a valid JSON object.",
                 },
             )
+        if completed.returncode != 0:
+            return {
+                "success": False,
+                "error": (
+                    f"Bitsec execution command failed with exit code {completed.returncode}: "
+                    f"{completed.stderr.strip() or completed.stdout.strip()}"
+                ),
+            }
         return {
             "success": False,
-            "error": (
-                f"Bitsec execution command failed with exit code {completed.returncode}: "
-                f"{completed.stderr.strip() or completed.stdout.strip()}"
-            ),
+            "error": "Bitsec execution command completed without writing report.json.",
         }
 
     return _execute
@@ -886,25 +915,36 @@ def build_default_evaluation_hook(source: Sn60SandboxSource) -> Sn60EvaluationHo
     ) -> dict[str, object]:
         if not Path(context.report_path).exists():
             write_json(Path(context.report_path), report_payload)
-        completed = subprocess.run(
-            build_bitsec_evaluation_command(context),
-            cwd=source.sandbox_root,
-            capture_output=True,
-            text=True,
-            env={
-                **default_subprocess_env(),
-                # Point the SN60 scorer at the exact benchmark file Kata
-                # resolved and recorded in provenance. The scorer hardcodes the
-                # filename and reads settings.validator_dir, so without this the
-                # recorded benchmark_sha256 could describe a different file than
-                # the one actually scored.
-                "VALIDATOR_DIR": str(
-                    Path(source.benchmark_file).expanduser().resolve().parent
+        try:
+            completed = subprocess.run(
+                build_bitsec_evaluation_command(context),
+                cwd=source.sandbox_root,
+                capture_output=True,
+                text=True,
+                env={
+                    **default_subprocess_env(),
+                    # Point the SN60 scorer at the exact benchmark file Kata
+                    # resolved and recorded in provenance. The scorer hardcodes the
+                    # filename and reads settings.validator_dir, so without this the
+                    # recorded benchmark_sha256 could describe a different file than
+                    # the one actually scored.
+                    "VALIDATOR_DIR": str(
+                        Path(source.benchmark_file).expanduser().resolve().parent
+                    ),
+                    "CHUTES_API_KEY": required_env("CHUTES_API_KEY"),
+                    "PROXY_URL": DEFAULT_SANDBOX_PROXY_URL,
+                },
+                timeout=_env_positive_float(
+                    "KATA_SN60_EVALUATION_TIMEOUT_SECONDS",
+                    DEFAULT_EVALUATION_SUBPROCESS_TIMEOUT_SECONDS,
                 ),
-                "CHUTES_API_KEY": required_env("CHUTES_API_KEY"),
-                "PROXY_URL": DEFAULT_SANDBOX_PROXY_URL,
-            },
-        )
+            )
+        except subprocess.TimeoutExpired as exc:
+            return {
+                "status": "error",
+                "error": f"Bitsec evaluation command timed out after {exc.timeout} seconds.",
+                "result": {},
+            }
         if completed.returncode == 0:
             try:
                 return json.loads(completed.stdout.strip())
