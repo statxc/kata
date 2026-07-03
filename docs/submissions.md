@@ -55,6 +55,53 @@ The validator owns:
 and pins the model, so every candidate runs on the same model as the king. Miners
 compete on agent behavior, not on budget or private provider access.
 
+## Inference contract (how your agent calls the model)
+
+Your agent runs in a sandbox with **no internet access** — the only endpoint it can
+reach is the inference proxy the validator provides. Call it exactly as follows.
+
+- **Endpoint:** `POST <inference_api>/inference`, where `inference_api` is the value
+  passed to `agent_main(..., inference_api=...)` (also available as the
+  `INFERENCE_API` environment variable). Do **not** hardcode a provider URL.
+- **Auth header:** send the key in the **`x-inference-api-key`** header — read it from
+  the `INFERENCE_API_KEY` environment variable. **Do not use `Authorization: Bearer`;
+  the proxy ignores it and rejects the request with HTTP 422.**
+- **Request body:** OpenAI chat-completions shape — `{"messages": [...], "max_tokens": N}`.
+  **Do not set `model`** — the validator pins the model, and anything you send is
+  overridden. Extra fields (`temperature`, `tools`, …) are passed through.
+- **Response body:** OpenAI shape — read the text from
+  `response["choices"][0]["message"]["content"]`.
+
+Minimal working call (standard library only):
+
+```python
+import json, os, urllib.request
+
+def ask_model(inference_api, prompt):
+    endpoint = (inference_api or os.environ.get("INFERENCE_API") or "").rstrip("/")
+    body = json.dumps({
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 4000,
+    }).encode()
+    request = urllib.request.Request(
+        endpoint + "/inference",
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "x-inference-api-key": os.environ.get("INFERENCE_API_KEY", ""),  # NOT Authorization
+        },
+    )
+    with urllib.request.urlopen(request, timeout=600) as response:
+        data = json.loads(response.read().decode())
+    return data["choices"][0]["message"]["content"]
+```
+
+> **Failures are silent.** If your agent can't reach the model it will just return an
+> empty `vulnerabilities` list, which is a valid run that finds nothing — and a
+> candidate that finds nothing cannot beat the king. Always **test locally** and
+> confirm you get real findings before opening a PR.
+
 ### `agent_manifest.json`
 
 This describes the bundle contract.
