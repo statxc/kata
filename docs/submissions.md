@@ -201,6 +201,9 @@ Your submission should pass these checks:
 - `agent_main` is synchronous and callable with no arguments.
 - `agent_main` does real analysis; it must not directly return an empty
   `vulnerabilities` list.
+- Do not swallow inference/API errors and fall back to an empty
+  `vulnerabilities` list. Empty screening reports are treated as no-op
+  submissions.
 - The one screening sandbox run finishes successfully.
 - The screening sandbox run finishes before the validator timeout.
 - The screening report is a JSON object with a top-level `vulnerabilities` list.

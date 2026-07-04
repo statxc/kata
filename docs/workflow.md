@@ -85,6 +85,9 @@ Execution screening then requires one valid Bitsec-style report:
 - optional severity must be `critical`, `high`, `medium`, or `low`
 - reports are capped at 100 findings
 
+Empty screening reports are rejected as no-op submissions. Agents should not
+catch inference/API failures and return `{"vulnerabilities": []}` as a fallback.
+
 If screening fails, the PR is closed with the screening reason and the full duel
 is skipped.
 
