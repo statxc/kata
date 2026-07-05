@@ -14,6 +14,7 @@ from kata.evaluators.sn60_bitsec import (
     build_default_execution_hook,
     ensure_internal_agent_network,
     extract_evaluation_metrics,
+    extract_sn60_evaluation_payload,
     load_sn60_benchmark_project_keys,
     project_passes,
     resolve_sn60_inference_api,
@@ -1116,3 +1117,31 @@ def test_duel_runs_candidate_then_king_per_project(tmp_path: Path) -> None:
         ("king", "project-beta", 1),
         ("king", "project-beta", 2),
     ]
+
+
+def test_extract_sn60_evaluation_payload_ignores_scorer_console_noise() -> None:
+    # The pinned scorer prints Rich tables + per-finding logs to stdout, then the
+    # result JSON on the last line. The whole stream is not valid JSON.
+    noisy = (
+        "╭── Scoring Project ──╮\n"
+        "Checking: some expected vulnerability...\n"
+        'LLM Response: found=False, reason=The finding is a placeholder {not json}\n'
+        "✗ Missed (confidence=0.00)\n"
+        '{"status": "Status.SUCCESS", "result": {"true_positives": 2, "total_expected": 9}}'
+    )
+    payload = extract_sn60_evaluation_payload(noisy)
+    assert payload is not None
+    assert payload["status"] == "Status.SUCCESS"
+    assert payload["result"]["true_positives"] == 2
+
+
+def test_extract_sn60_evaluation_payload_handles_clean_json() -> None:
+    payload = extract_sn60_evaluation_payload('{"status": "success", "result": {}}')
+    assert payload == {"status": "success", "result": {}}
+
+
+def test_extract_sn60_evaluation_payload_returns_none_without_result() -> None:
+    assert extract_sn60_evaluation_payload("") is None
+    assert extract_sn60_evaluation_payload("just some logs\nno json here") is None
+    # a JSON object without a status field is not the scorer result
+    assert extract_sn60_evaluation_payload('{"foo": 1}') is None

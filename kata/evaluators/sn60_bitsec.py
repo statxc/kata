@@ -889,6 +889,36 @@ def _read_untrusted_report_json(
     return payload
 
 
+def extract_sn60_evaluation_payload(stdout: str) -> dict[str, object] | None:
+    """Pull the scorer's result JSON out of its (noisy) stdout.
+
+    The pinned Bitsec scorer prints verbose progress -- Rich tables, per-finding
+    match logs -- to stdout before the final ``json.dumps`` result, so the whole
+    stream is not valid JSON. Parse the last stdout line that is a JSON object
+    carrying a ``status`` field (the result), tolerating any preceding noise.
+    """
+    stripped = stdout.strip()
+    if not stripped:
+        return None
+    try:
+        payload = json.loads(stripped)
+        if isinstance(payload, dict) and "status" in payload:
+            return payload
+    except json.JSONDecodeError:
+        pass
+    for line in reversed(stripped.splitlines()):
+        candidate = line.strip()
+        if not (candidate.startswith("{") and candidate.endswith("}")):
+            continue
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and "status" in payload:
+            return payload
+    return None
+
+
 def build_default_evaluation_hook(source: Sn60SandboxSource) -> Sn60EvaluationHook:
     def _evaluate(
         context: Sn60ReplicaContext,
@@ -927,21 +957,14 @@ def build_default_evaluation_hook(source: Sn60SandboxSource) -> Sn60EvaluationHo
                 "result": {},
             }
         if completed.returncode == 0:
-            try:
-                payload = json.loads(completed.stdout.strip())
-            except json.JSONDecodeError:
+            payload = extract_sn60_evaluation_payload(completed.stdout)
+            if payload is None:
                 return {
                     "status": "error",
-                    "error": "SN60 evaluation stdout is not valid JSON.",
+                    "error": "SN60 evaluation stdout did not contain a result JSON object.",
                     "result": {},
                 }
-            if isinstance(payload, dict):
-                return payload
-            return {
-                "status": "error",
-                "error": "SN60 evaluation stdout is not a JSON object.",
-                "result": {},
-            }
+            return payload
         return {
             "status": "error",
             "error": (
