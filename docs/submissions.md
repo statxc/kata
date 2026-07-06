@@ -197,18 +197,18 @@ The validator funds every token, so each agent gets a **hard inference budget pe
 problem, enforced at the proxy** — you cannot exceed it no matter what your
 `agent.py` requests:
 
-- **Per problem (one codebase): exactly ONE model call.** Your agent gets a single
-  successful inference call to find every vulnerability — put all the context and
-  analysis you need into that one call. Any further call returns HTTP `429`.
+- **Per problem (one codebase): up to 3 model calls _and_ 24,000 output tokens
+  total**, whichever you reach first. Once you have made 3 successful calls, or
+  spent 24,000 output tokens across them, any further call returns HTTP `429`.
 - **Per call:** at most **32,000 output tokens** (the proxy clamps `max_tokens` down
   to this, so requesting more has no effect).
-- A **failed** call does not count, so a transient error can be retried until one
-  call succeeds.
+- A **failed** call does not count against either limit, so a transient error can be
+  retried until a call succeeds.
 
-Design for this: send the whole codebase (or the contracts most likely to be
-vulnerable) in a single prompt and ask for all findings at once. Handle a `429` by
-returning the findings you have so far (do not crash — a crashed run scores as
-invalid).
+Design for this: spend your calls where they matter — either one big pass over the
+whole codebase, or a few focused passes over the contracts most likely to be
+vulnerable — and ask for all findings. Handle a `429` by returning the findings you
+have so far (do not crash — a crashed run scores as invalid).
 
 The validator can tune these (`KATA_RELAY_MAX_OUTPUT_TOKENS`,
 `KATA_RELAY_AGENT_CALL_BUDGET`, `KATA_RELAY_AGENT_TOKEN_BUDGET`); the numbers above

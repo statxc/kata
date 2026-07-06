@@ -65,13 +65,13 @@ DEFAULT_MAX_OUTPUT_TOKENS = 32000
 # calling container's address and reset whenever a new container starts calling.
 # 0 disables a limit. Override with KATA_RELAY_AGENT_TOKEN_BUDGET / _CALL_BUDGET.
 # Per-agent budget, keyed per problem via the `/j/<token>/inference` path Kata
-# sets (see AgentBudget). Each agent gets exactly ONE successful model call per
-# problem: it must do all context and analysis in that single call. Any further
-# call is refused (HTTP 429). Failed calls are not counted, so a transient failure
-# can still be retried until one succeeds. The single call is bounded by the
-# per-call max_tokens clamp (KATA_RELAY_MAX_OUTPUT_TOKENS).
-DEFAULT_AGENT_TOKEN_BUDGET = 32000
-DEFAULT_AGENT_CALL_BUDGET = 1
+# sets (see AgentBudget). Each agent may make up to CALL_BUDGET successful model
+# calls per problem, and at most TOKEN_BUDGET output tokens across them, whichever
+# is reached first (further calls -> HTTP 429). Failed calls are not counted, so a
+# transient failure can be retried. Individual calls are also clamped to
+# KATA_RELAY_MAX_OUTPUT_TOKENS.
+DEFAULT_AGENT_TOKEN_BUDGET = 24000
+DEFAULT_AGENT_CALL_BUDGET = 3
 
 # Only this path carries a model to overwrite; everything else is forwarded as-is.
 INFERENCE_PATH = "/inference"
