@@ -566,38 +566,62 @@ def run_sn60_round(
             json.dumps(progress, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
 
+    # Accumulate running detection/precision/F1 and a growing per-problem list for
+    # whichever variant is scoring, so the dashboard detail pages (king AND each
+    # candidate) fill their metric bars and problem rows live, not only at the end.
+    def apply_running(
+        target: dict[str, object], acc: dict, replica_result: Sn60ReplicaResult
+    ) -> None:
+        acc["tp"] += replica_result.true_positives
+        acc["expected"] += replica_result.total_expected
+        acc["found"] += replica_result.total_found
+        if replica_result.evaluation_status != "success":
+            acc["invalid"] += 1
+        acc["projects"].append(
+            {
+                "project_key": replica_result.project_key,
+                "passed": replica_result.result == "PASS",
+                "detection_rate": replica_result.detection_rate,
+                "true_positives": replica_result.true_positives,
+                "total_expected": replica_result.total_expected,
+                "total_found": replica_result.total_found,
+                "precision": replica_result.precision,
+                "f1_score": replica_result.f1_score,
+            }
+        )
+        detection = acc["tp"] / acc["expected"] if acc["expected"] else 0.0
+        precision = acc["tp"] / acc["found"] if acc["found"] else 0.0
+        f1 = (
+            2 * precision * detection / (precision + detection)
+            if (precision + detection)
+            else 0.0
+        )
+        target["aggregated_score"] = detection
+        target["precision"] = precision
+        target["f1_score"] = f1
+        target["true_positives"] = acc["tp"]
+        target["total_expected"] = acc["expected"]
+        target["total_found"] = acc["found"]
+        target["invalid_runs"] = acc["invalid"]
+        target["projects"] = list(acc["projects"])
+
+    king_acc = {"tp": 0, "expected": 0, "found": 0, "invalid": 0, "projects": []}
+
     def make_progress_callback(candidate_entry: dict[str, object]):
-        # Accumulate the candidate's running detection/precision/F1 as each problem
-        # finishes, so the dashboard duel detail shows live metric bars while the
-        # duel is still scoring (not just at the end).
-        acc = {"tp": 0, "expected": 0, "found": 0}
+        cand_acc = {"tp": 0, "expected": 0, "found": 0, "invalid": 0, "projects": []}
 
         def callback(context: Sn60ReplicaContext, replica_result: Sn60ReplicaResult) -> None:
             if context.variant_name == "king":
                 king = progress["king"]
                 if king["done"] < king["total"]:
                     king["done"] += 1
+                    apply_running(king, king_acc, replica_result)
                 if king["done"] >= king["total"]:
                     king["state"] = "done"
             elif candidate_entry["done"] < candidate_entry["total"]:
                 candidate_entry["state"] = "scoring"
                 candidate_entry["done"] += 1
-                acc["tp"] += replica_result.true_positives
-                acc["expected"] += replica_result.total_expected
-                acc["found"] += replica_result.total_found
-                detection = acc["tp"] / acc["expected"] if acc["expected"] else 0.0
-                precision = acc["tp"] / acc["found"] if acc["found"] else 0.0
-                f1 = (
-                    2 * precision * detection / (precision + detection)
-                    if (precision + detection)
-                    else 0.0
-                )
-                candidate_entry["aggregated_score"] = detection
-                candidate_entry["precision"] = precision
-                candidate_entry["f1_score"] = f1
-                candidate_entry["true_positives"] = acc["tp"]
-                candidate_entry["total_expected"] = acc["expected"]
-                candidate_entry["total_found"] = acc["found"]
+                apply_running(candidate_entry, cand_acc, replica_result)
             emit_progress()
 
         return callback
