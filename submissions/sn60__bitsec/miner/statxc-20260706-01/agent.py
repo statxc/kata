@@ -82,8 +82,12 @@ VERIFY_DROP_THRESHOLD = 0.2   # Deliberately much stricter than MIN_CONFIDENCE (
                               # costs (a lower-priority tiebreaker). Verification mostly demotes
                               # weak findings via confidence (letting the cap prune them if we're
                               # over budget); only near-certain refutations are removed outright.
-TIME_BUDGET_SECONDS = 600.0         # raised from an earlier 300s -- still a small fraction of the
-                                     # sandbox's execution timeout, but lets more files complete
+TIME_BUDGET_SECONDS = 1500.0        # raised from 600s -- confirmed live against the real pinned
+                                     # reasoning model that it burns real budget on reasoning before
+                                     # answering (one run used 519s of a 600s budget, 86%, for a
+                                     # single modest project). The sandbox's own execution ceiling
+                                     # is ~2100s; this leaves ~600s of margin for container/network
+                                     # overhead rather than risk a mid-run cutoff.
 REQUEST_TIMEOUT_SECONDS = 90
 MAX_ATTEMPTS_PER_CALL = 2           # 1 initial attempt + 1 retry on a transient failure
 RETRY_BACKOFF_SECONDS = 3.0
