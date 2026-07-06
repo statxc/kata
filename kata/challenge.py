@@ -548,6 +548,9 @@ def run_sn60_round(
         "schema_version": DEFAULT_SN60_ROUND_SCHEMA_VERSION,
         "state": "executing",
         "run_id": run_id,
+        # The full sampled problem list, so the dashboard can show all problems up
+        # front (pending ones included) rather than only completed ones.
+        "project_keys": list(project_keys),
         # The king is scored first (all problems), then each candidate one by one.
         "king": {"done": 0, "total": per_variant_total, "state": "scoring"},
         "candidates": [
