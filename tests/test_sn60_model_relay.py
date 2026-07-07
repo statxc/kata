@@ -314,10 +314,12 @@ def test_upstream_check_reports_ok_when_reachable(relay_and_upstream) -> None:
     payload = json.loads(body)
     assert payload["ok"] is True
     assert payload["status"] == 200
-    # The probe hits upstream /inference with a cheap max_tokens=1 (not forced up).
+    # The probe hits upstream /inference with a bounded max_tokens (not forced up to
+    # the 32k inference ceiling), so it stays cheap while giving the reasoning model
+    # room to return a usable reply.
     last = upstream.records[-1]
     assert last["path"] == "/inference"
-    assert json.loads(last["body"])["max_tokens"] == 1
+    assert json.loads(last["body"])["max_tokens"] == 2000
 
 
 def test_upstream_check_reports_failure_status(relay_and_upstream) -> None:

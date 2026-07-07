@@ -84,6 +84,10 @@ HEALTH_PATH = "/healthz"
 # not exhausted) BEFORE spending a round's worth of tokens. Unlike /inference it
 # does not force max_tokens up, so the probe is cheap and fast.
 UPSTREAM_CHECK_PATH = "/healthz/upstream"
+# Output-token ceiling for the upstream probe. Big enough that the reasoning model
+# finishes a trivial reply (so a healthy provider returns 200), small enough to be
+# cheap and fast (~2s).
+HEALTHCHECK_MAX_TOKENS = 2000
 # Relay-local cost accounting: read the running total, or zero it before a PR.
 COST_PATH = "/costs"
 COST_RESET_PATH = "/costs/reset"
@@ -425,11 +429,15 @@ class ModelPinningRelayHandler(BaseHTTPRequestHandler):
         errors. ``max_tokens`` is kept at 1 (not forced up) so this stays cheap.
         """
         self._read_body()  # drain any body the caller sent
+        # The pinned model reasons before answering, so a 1-token probe truncates and
+        # the proxy rejects it as unusable (a false failure). Give it enough room to
+        # finish a trivial reply; a healthy provider returns 200 in ~2s, an exhausted
+        # key still fails fast with 403.
         probe_body = json.dumps(
             {
                 "model": resolve_pinned_model(),
-                "messages": [{"role": "user", "content": "ping"}],
-                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "Reply with the single word OK."}],
+                "max_tokens": HEALTHCHECK_MAX_TOKENS,
             }
         ).encode()
         headers = {"Content-Type": "application/json"}
