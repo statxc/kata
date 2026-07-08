@@ -128,10 +128,25 @@ def promote_replay_findings(findings: list[ScreeningFinding]) -> list[ScreeningF
         replace(
             finding,
             severity="reject",
-            reason=(
-                "SN60 screening rejected hardcoded benchmark replay: "
-                + finding.reason.partition(": ")[2]
-            ),
+            reason=render_replay_rejection_reason(finding),
         )
         for finding in findings
     ]
+
+
+def render_replay_rejection_reason(finding: ScreeningFinding) -> str:
+    detail = finding.reason.strip()
+    if detail.startswith("SN60 screening found "):
+        detail = detail.removeprefix("SN60 screening found ").strip()
+    if detail.startswith("SN60 screening "):
+        detail = detail.removeprefix("SN60 screening ").strip()
+    if not detail:
+        detail = (
+            "concrete benchmark-specific replay evidence was found "
+            f"by `{finding.rule_id}`."
+        )
+    return (
+        "SN60 screening rejected hardcoded benchmark replay: "
+        f"{detail} Remove benchmark IDs, known finding IDs, copied finding "
+        "titles/answers, and any prewritten benchmark-specific reports."
+    )

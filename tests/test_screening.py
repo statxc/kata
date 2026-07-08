@@ -208,7 +208,11 @@ def test_screen_submission_rejects_replay_signals_in_strict_mode(
     assert not decision.passed
     assert decision.review_reasons == []
     assert decision.reject_reasons[0].severity == "reject"
-    assert "rejected hardcoded benchmark replay" in decision.rejection_messages()[0]
+    assert (
+        "rejected hardcoded benchmark replay: a hardcoded benchmark-style project id"
+        in decision.rejection_messages()[0]
+    )
+    assert "code4rena_mantra-dex_2025_03" in decision.rejection_messages()[0]
 
 
 def test_screen_submission_rejects_known_title_and_answer_text_in_strict_mode(
@@ -244,6 +248,18 @@ def test_screen_submission_rejects_known_title_and_answer_text_in_strict_mode(
     assert "benchmark_replay.title_text" in rule_ids
     assert "benchmark_replay.long_answer_text" in rule_ids
     assert all(finding.severity == "reject" for finding in decision.reject_reasons)
+    assert all(
+        "rejected hardcoded benchmark replay: Remove" not in reason
+        for reason in decision.rejection_messages()
+    )
+    assert any(
+        "exact known benchmark finding title text" in reason
+        for reason in decision.rejection_messages()
+    )
+    assert any(
+        "exact known benchmark answer text" in reason
+        for reason in decision.rejection_messages()
+    )
 
 
 def test_screen_submission_keeps_ambiguous_fingerprint_as_review_in_strict_mode(
