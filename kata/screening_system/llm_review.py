@@ -203,15 +203,36 @@ def build_llm_review_prompt(
     ]
     sources = render_source_packet(bundle_files)
     return (
-        "Review this Kata SN60 miner agent for screening integrity.\n\n"
-        "Cheating means benchmark-specific hardcoded findings, exact project "
-        "fingerprint replay, copied current-king logic, answer-key use, or "
-        "bypassing real analysis by matching known benchmark signatures.\n\n"
-        "Important rules:\n"
-        "- Deterministic screening evidence is primary.\n"
-        "- Do not reject weak but honest generic analysis.\n"
-        "- A generic reusable detector is allowed even if it finds zero bugs.\n"
-        "- Return JSON only; no markdown.\n\n"
+        "Review this Kata SN60 miner submission for screening integrity.\n"
+        "Use the Kata submission rules below. Be careful and fair: accept as "
+        "much honest generic analysis as possible, but flag clear cheating, "
+        "replay, copy-cat, or secret-leaking code.\n\n"
+        "Kata submission rules:\n"
+        "- The miner must be a general vulnerability-analysis agent for unseen "
+        "projects, not a prewritten answer bank.\n"
+        "- The miner must not hardcode benchmark project IDs, known finding IDs, "
+        "known report titles, long answer text, or static benchmark-specific "
+        "reports.\n"
+        "- The miner must not replay exact project fingerprints to emit canned "
+        "findings.\n"
+        "- The miner must not copy the current king agent exactly or with only "
+        "minor/AST-equivalent changes.\n"
+        "- The miner must not use answer-key leakage tokens or validator/provider "
+        "secrets such as OPENAI_API_KEY, CHUTES_API_KEY, KATA_VALIDATOR_API_KEY, "
+        "expected_findings, ground_truth, answer_key, scabench, or hardsteer.\n"
+        "- Weak or low-quality generic analysis is allowed. A generic reusable "
+        "detector is allowed even if it finds zero vulnerabilities.\n\n"
+        "How to judge:\n"
+        "- Deterministic screening evidence is primary. Do not ignore it.\n"
+        "- Use `pass` when the suspicious evidence is explainable as generic, "
+        "honest analysis.\n"
+        "- Use `suspicious` when manual review is needed but cheating is not "
+        "conclusive.\n"
+        "- Use `reject` only when the source clearly supports benchmark replay, "
+        "hardcoding, copy-cat behavior, or secret/answer leakage.\n"
+        "- Include short line-specific evidence when possible.\n"
+        "- Keep `summary` plain and concise, one or two human-readable sentences.\n"
+        "- Return JSON only; no markdown and no extra commentary.\n\n"
         "Return this exact JSON shape:\n"
         "{\n"
         '  "verdict": "pass|suspicious|reject",\n'
@@ -298,10 +319,7 @@ def llm_review_finding(result: LlmReviewResult) -> ScreeningFinding:
         severity="review",
         path=None,
         line=None,
-        reason=(
-            "LLM review supports holding this submission for manual review: "
-            f"{summary}"
-        ),
+        reason=(f"LLM review supports holding this submission for manual review: {summary}"),
         evidence=f"verdict={result.verdict}; confidence={result.confidence:.2f}",
     )
 
