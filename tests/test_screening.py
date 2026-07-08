@@ -127,7 +127,10 @@ def test_screen_submission_wraps_current_static_screening(tmp_path: Path) -> Non
     assert decision.status == "reject"
     assert not decision.passed
     assert decision.rejection_messages() == validate_sn60_static_screening(bundle_root)
-    assert all(finding.rule_id == "sn60.static" for finding in decision.reject_reasons)
+    assert {finding.rule_id for finding in decision.reject_reasons} == {
+        "sn60.answer_key_token",
+        "sn60.helper_files",
+    }
 
 
 def test_screen_submission_reports_exact_benchmark_replay_signals(tmp_path: Path) -> None:

@@ -5,13 +5,20 @@ from dataclasses import replace
 from pathlib import Path
 
 from kata.agent_bundle import load_bundle_files
-from kata.screening import validate_sn60_static_screening
 from kata.screening_system.benchmark_replay import (
     analyze_benchmark_replay,
     is_concrete_replay_finding,
 )
 from kata.screening_system.llm_review import review_suspicious_submission_with_llm
 from kata.screening_system.models import ScreeningDecision, ScreeningFinding
+from kata.screening_system.rules import (
+    dedupe_findings,
+    screen_bundle_python_sources,
+    screen_bundle_static_policy,
+    screen_sn60_static_bundle,
+    screen_submission_bundle_files,
+)
+from kata.screening_system.similarity import screen_current_king_copycat
 
 STRICT_REPLAY_ENV = "KATA_SCREENING_STRICT_REPLAY"
 REVIEW_MODE_ENV = "KATA_SCREENING_REVIEW_MODE"
@@ -25,6 +32,7 @@ def screen_submission(
     public_root: Path | None = None,
     pr_author: str | None = None,
     mode: str = "miner",
+    repo_pack: str | None = None,
     enable_review: bool | None = None,
     strict_replay: bool | None = None,
 ) -> ScreeningDecision:
@@ -34,23 +42,27 @@ def screen_submission(
     static screening checks in a structured decision object. The extra arguments
     are part of the stable subsystem API and will be used by later layers.
     """
-    del changed_paths, repo_root, public_root, pr_author
+    del changed_paths, repo_root, pr_author
     if mode != "miner":
         return ScreeningDecision(status="pass")
 
-    reject_findings = [
-        ScreeningFinding(
-            rule_id="sn60.static",
-            severity="reject",
-            path="agent.py",
-            line=None,
-            reason=reason,
-            evidence=reason,
-        )
-        for reason in validate_sn60_static_screening(submission_root)
-    ]
     bundle_files = load_bundle_files(submission_root)
+    reject_findings = []
+    reject_findings.extend(screen_submission_bundle_files(submission_root))
+    reject_findings.extend(screen_bundle_python_sources(bundle_files))
+    reject_findings.extend(screen_bundle_static_policy(bundle_files))
+    reject_findings.extend(screen_sn60_static_bundle(bundle_files))
     review_findings, review_score = analyze_benchmark_replay(bundle_files)
+    copycat_rejects, copycat_reviews, copycat_score = screen_current_king_copycat(
+        submission_root=submission_root,
+        bundle_files=bundle_files,
+        repo_pack=repo_pack,
+        mode=mode,
+        public_root=str(public_root) if public_root is not None else None,
+    )
+    reject_findings.extend(copycat_rejects)
+    review_findings.extend(copycat_reviews)
+    review_score += copycat_score
     notes: list[ScreeningFinding] = []
     if resolve_strict_replay(strict_replay):
         concrete_findings = [
@@ -60,6 +72,8 @@ def screen_submission(
         review_findings = [
             finding for finding in review_findings if not is_concrete_replay_finding(finding)
         ]
+    reject_findings = dedupe_findings(reject_findings)
+    review_findings = dedupe_findings(review_findings)
     if reject_findings:
         return ScreeningDecision(
             status="reject",
@@ -78,6 +92,7 @@ def screen_submission(
         ),
     )
     review_findings.extend(llm_findings)
+    review_findings = dedupe_findings(review_findings)
     notes.extend(llm_notes)
     if review_findings and resolve_review_mode(enable_review):
         return ScreeningDecision(

@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import ast
-import difflib
 import hashlib
 import json
 import os
-import py_compile
 import re
 import secrets
-import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,16 +12,10 @@ from pathlib import Path
 from kata.agent_bundle import (
     AGENT_ENTRY_FILENAME,
     AGENT_MANIFEST_FILENAME,
-    find_unexpected_bundle_paths,
     is_allowed_bundle_relative_path,
     load_bundle_files,
     validate_agent_manifest,
     write_agent_manifest,
-)
-from kata.ast_utils import (
-    find_module_async_function_def,
-    find_module_function_def,
-    function_supports_no_arg_invocation,
 )
 from kata.challenge import (
     SN60_VALIDATOR_MODEL,
@@ -51,13 +41,19 @@ from kata.lane_state import (
     load_pack_registry,
     write_lane_king_state,
 )
-from kata.provenance import sha256_directory, short_hash
+from kata.provenance import short_hash
 from kata.public_artifacts import (
     publish_public_king,
     resolve_kata_root,
     resolve_public_king_root,
 )
 from kata.screening_system import ScreeningFinding, screen_submission
+from kata.screening_system.rules import (
+    find_bundle_symlink_paths,
+    hash_submission_bundle,
+    validate_bundle_python_sources,
+    validate_bundle_static_policy,
+)
 from kata.util import dedupe
 
 SUBMISSIONS_DIRNAME = "submissions"
@@ -82,50 +78,6 @@ PR_ACTION_RERUN_STALE = "rerun-stale"
 PR_ACTION_MERGE = "merge"
 SN60_PROJECT_SAMPLE_SIZE_ENV = "KATA_SN60_PROJECT_SAMPLE_SIZE"
 SN60_PROJECT_SAMPLE_SECRET_ENV = "KATA_SN60_PROJECT_SAMPLE_SECRET"
-MAX_SUBMISSION_BUNDLE_FILES = 16
-MAX_SUBMISSION_FILE_BYTES = 64 * 1024
-MAX_SUBMISSION_BUNDLE_BYTES = 128 * 1024
-KING_NEAR_COPY_SIMILARITY_THRESHOLD = 0.85
-FORBIDDEN_ENV_REFERENCE_TOKENS = (
-    "KATA_VALIDATOR_API_KEY",
-    "KATA_VALIDATOR_API_BASE",
-    "KATA_VALIDATOR_MODEL",
-    "CHUTES_API_KEY",
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "GOOGLE_API_KEY",
-    "OPENROUTER_API_KEY",
-)
-FORBIDDEN_PROVIDER_SUBSTRINGS = (
-    "api.openai.com",
-    "openrouter.ai",
-    "anthropic.com",
-    "generativelanguage.googleapis.com",
-    "api.groq.com",
-    "api.together.xyz",
-    "api.fireworks.ai",
-    "api.mistral.ai",
-    "api.deepseek.com",
-    "deepinfra.com",
-    "cohere.ai",
-)
-FORBIDDEN_SAMPLING_NAMES = {
-    "temperature",
-    "top_p",
-    "top_k",
-    "min_p",
-    "top_a",
-    "frequency_penalty",
-    "presence_penalty",
-    "repetition_penalty",
-    "seed",
-    "logit_bias",
-    "logprobs",
-    "top_logprobs",
-}
-SECRET_PATTERN = re.compile(
-    r"(sk-[A-Za-z0-9]{10,}|ghp_[A-Za-z0-9]{10,}|hf_[A-Za-z0-9]{10,}|cpk_[A-Za-z0-9]{10,})"
-)
 
 
 @dataclass(frozen=True)
@@ -1121,47 +1073,10 @@ def validate_submission_candidate(
     submission_root: Path,
     public_root: str | None = None,
 ) -> SubmissionCandidateValidation:
-    reasons: list[str] = []
     screening_status: str | None = None
     screening_review_reasons: list[str] = []
     screening_notes: list[str] = []
     screening_score = 0
-    unexpected_paths = find_unexpected_bundle_paths(submission_root)
-    if unexpected_paths:
-        reasons.append(
-            "Submission bundle contains unsupported files: " + ", ".join(unexpected_paths)
-        )
-
-    symlink_paths = find_bundle_symlink_paths(submission_root)
-    if symlink_paths:
-        reasons.append(
-            "Submission bundle must not contain symlinks: " + ", ".join(symlink_paths)
-        )
-
-    bundle_paths = find_bundle_relative_paths(submission_root)
-    if len(bundle_paths) > MAX_SUBMISSION_BUNDLE_FILES:
-        reasons.append(
-            "Submission bundle is too large. "
-            f"Found {len(bundle_paths)} files; limit is {MAX_SUBMISSION_BUNDLE_FILES}."
-        )
-
-    total_bytes = 0
-    for relative_path in bundle_paths:
-        file_path = submission_root / relative_path
-        file_bytes = file_path.stat().st_size
-        total_bytes += file_bytes
-        if file_bytes > MAX_SUBMISSION_FILE_BYTES:
-            reasons.append(
-                f"Submission bundle file is too large: {relative_path} "
-                f"({file_bytes} bytes; limit is {MAX_SUBMISSION_FILE_BYTES})."
-            )
-    if total_bytes > MAX_SUBMISSION_BUNDLE_BYTES:
-        reasons.append(
-            "Submission bundle total size is too large. "
-            f"Found {total_bytes} bytes; limit is {MAX_SUBMISSION_BUNDLE_BYTES}."
-        )
-
-    bundle_files = load_bundle_files(submission_root)
     if metadata.mode == "miner":
         screening_decision = screen_submission(
             submission_root=submission_root,
@@ -1169,6 +1084,7 @@ def validate_submission_candidate(
             repo_root=submission_root,
             public_root=Path(public_root).expanduser().resolve() if public_root else None,
             mode=metadata.mode,
+            repo_pack=metadata.repo_pack,
         )
         screening_status = screening_decision.status
         screening_review_reasons = [
@@ -1179,28 +1095,13 @@ def validate_submission_candidate(
             render_screening_finding(finding) for finding in screening_decision.notes
         ]
         screening_score = screening_decision.score
-        reasons.extend(screening_decision.rejection_messages())
-
-    reasons.extend(validate_bundle_python_sources(bundle_files))
-    reasons.extend(validate_bundle_static_policy(bundle_files))
-    reasons.extend(
-        validate_submission_not_copycat(
-            metadata=metadata,
-            submission_root=submission_root,
-            bundle_files=bundle_files,
-            public_root=public_root,
-        )
-    )
-    king_review_reasons = validate_submission_near_copy_of_lane_king(
-        metadata=metadata,
-        bundle_files=bundle_files,
-        public_root=public_root,
-    )
-    if king_review_reasons:
-        screening_review_reasons.extend(king_review_reasons)
-        screening_score += 4
-        if screening_status != "reject" and screening_review_mode_enabled():
-            screening_status = "review"
+        reasons = screening_decision.rejection_messages()
+    else:
+        bundle_files = load_bundle_files(submission_root)
+        reasons = [
+            *validate_bundle_python_sources(bundle_files),
+            *validate_bundle_static_policy(bundle_files),
+        ]
     return SubmissionCandidateValidation(
         reasons=dedupe(reasons),
         screening_status=screening_status,
@@ -1423,312 +1324,3 @@ def normalize_changed_paths(changed_paths: list[str]) -> list[str]:
             continue
         normalized.append(value.strip("/"))
     return normalized
-
-
-
-
-def hash_submission_bundle(root: Path) -> str:
-    bundle_root = root.expanduser().resolve()
-    relative_paths = sorted(
-        path for path in find_bundle_relative_paths(bundle_root)
-    )
-    return sha256_directory(bundle_root, include=relative_paths)
-
-
-def find_bundle_relative_paths(root: Path) -> list[str]:
-    relative_paths = [
-        path.relative_to(root).as_posix()
-        for path in sorted(root.rglob("*"))
-        if not path.is_symlink()
-        and path.is_file()
-        and is_allowed_bundle_relative_path(path.relative_to(root).as_posix())
-    ]
-    return relative_paths
-
-
-def find_bundle_symlink_paths(root: Path) -> list[str]:
-    return [
-        path.relative_to(root).as_posix()
-        for path in sorted(root.rglob("*"))
-        if path.is_symlink()
-    ]
-
-
-def validate_bundle_python_sources(bundle_files: dict[str, str]) -> list[str]:
-    reasons: list[str] = []
-    for relative_path, content in sorted(bundle_files.items()):
-        try:
-            ast.parse(content, filename=relative_path)
-        except SyntaxError as exc:
-            line_number = exc.lineno or 1
-            reasons.append(
-                "Submission bundle contains invalid Python syntax in "
-                f"{relative_path}:{line_number}."
-            )
-            continue
-        temp_path: Path | None = None
-        bytecode_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                "w",
-                suffix=".py",
-                encoding="utf-8",
-                delete=False,
-            ) as handle:
-                handle.write(content)
-                temp_path = Path(handle.name)
-            bytecode_path = temp_path.with_suffix(".pyc")
-            py_compile.compile(str(temp_path), cfile=str(bytecode_path), doraise=True)
-        except (OSError, py_compile.PyCompileError):
-            reasons.append(
-                "Submission bundle failed Python compile smoke check in "
-                f"{relative_path}."
-            )
-        finally:
-            if bytecode_path is not None:
-                bytecode_path.unlink(missing_ok=True)
-            if temp_path is not None:
-                temp_path.unlink(missing_ok=True)
-    agent_source = bundle_files.get(AGENT_ENTRY_FILENAME, "")
-    if agent_source and not agent_defines_required_entrypoint(agent_source):
-        reasons.append(required_submission_entrypoint_reason())
-    return reasons
-
-
-def validate_bundle_static_policy(bundle_files: dict[str, str]) -> list[str]:
-    reasons: list[str] = []
-    parsed_trees: dict[str, ast.AST] = {}
-    for relative_path, content in sorted(bundle_files.items()):
-        try:
-            parsed_trees[relative_path] = ast.parse(content, filename=relative_path)
-        except SyntaxError:
-            continue
-        for token in FORBIDDEN_ENV_REFERENCE_TOKENS:
-            if token in content:
-                reasons.append(
-                    f"Submission bundle must not read validator/provider secret env vars "
-                    f"directly: {relative_path} references `{token}`."
-                )
-        lowered = content.lower()
-        for token in FORBIDDEN_PROVIDER_SUBSTRINGS:
-            if token in lowered:
-                reasons.append(
-                    f"Submission bundle must not hardcode provider endpoints directly: "
-                    f"{relative_path} references `{token}`."
-                )
-        if SECRET_PATTERN.search(content):
-            reasons.append(
-                f"Submission bundle appears to contain a hardcoded secret token: {relative_path}."
-            )
-    reasons.extend(validate_bundle_miner_contract(parsed_trees))
-    reasons.extend(validate_bundle_sampling_policy(parsed_trees))
-    return reasons
-
-
-
-
-def validate_bundle_miner_contract(parsed_trees: dict[str, ast.AST]) -> list[str]:
-    agent_tree = parsed_trees.get(AGENT_ENTRY_FILENAME)
-    if agent_tree is None:
-        return []
-    agent_main_fn = find_module_function_def(agent_tree, "agent_main")
-    if agent_main_fn is None:
-        if find_module_async_function_def(agent_tree, "agent_main") is not None:
-            return [
-                "Submission agent_main must be a synchronous function; the SN60 "
-                "sandbox runner calls agent_main() directly and does not await "
-                "coroutines."
-            ]
-        return [required_submission_entrypoint_reason()]
-
-    if not function_supports_no_arg_invocation(agent_main_fn):
-        return ["Submission agent must support no-argument invocation: agent_main()."]
-
-    for return_node in iter_non_nested_function_returns(agent_main_fn):
-        if return_node.value is None or not isinstance(return_node.value, ast.Dict):
-            continue
-        if not dict_contains_string_key(return_node.value, "vulnerabilities"):
-            return [
-                "Submission agent must return a Bitsec-compatible report with "
-                "top-level `vulnerabilities`."
-            ]
-    return []
-
-
-def validate_bundle_sampling_policy(parsed_trees: dict[str, ast.AST]) -> list[str]:
-    reasons: list[str] = []
-    for relative_path, tree in sorted(parsed_trees.items()):
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            for keyword in node.keywords:
-                if keyword.arg in FORBIDDEN_SAMPLING_NAMES:
-                    reasons.append(
-                        "Submission bundle must not control model sampling parameters "
-                        f"directly: {relative_path} uses `{keyword.arg}`."
-                    )
-                if keyword.arg is None and isinstance(keyword.value, ast.Dict):
-                    for key_node in keyword.value.keys:
-                        if (
-                            isinstance(key_node, ast.Constant)
-                            and isinstance(key_node.value, str)
-                            and key_node.value in FORBIDDEN_SAMPLING_NAMES
-                        ):
-                            reasons.append(
-                                "Submission bundle must not control model sampling "
-                                f"parameters directly: {relative_path} uses "
-                                f"`{key_node.value}`."
-                            )
-    return reasons
-
-
-def iter_non_nested_function_returns(function_node: ast.FunctionDef):
-    stack: list[ast.AST] = list(reversed(function_node.body))
-    while stack:
-        node = stack.pop()
-        if isinstance(node, ast.Return):
-            yield node
-            continue
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
-            continue
-        stack.extend(reversed(list(ast.iter_child_nodes(node))))
-
-
-def dict_contains_string_key(node: ast.Dict, key_name: str) -> bool:
-    for key in node.keys:
-        if isinstance(key, ast.Constant) and key.value == key_name:
-            return True
-    return False
-
-
-
-
-
-
-def validate_submission_not_copycat(
-    *,
-    metadata: SubmissionMetadata,
-    submission_root: Path,
-    bundle_files: dict[str, str],
-    public_root: str | None = None,
-) -> list[str]:
-    evaluator_entry = find_evaluator_pack_entry(
-        metadata.repo_pack, metadata.mode, public_root=public_root
-    )
-    if evaluator_entry is None:
-        return []
-    reasons = validate_submission_not_copycat_of_lane_king(
-        lane_id=evaluator_entry.lane_id,
-        submission_root=submission_root,
-        public_root=public_root,
-    )
-    candidate_agent = bundle_files.get(AGENT_ENTRY_FILENAME)
-    if candidate_agent is not None:
-        king_agent_path = (
-            resolve_public_king_root(
-                public_root=public_root,
-                repo_pack=metadata.repo_pack,
-                mode=metadata.mode,
-            )
-            / AGENT_ENTRY_FILENAME
-        )
-        if king_agent_path.exists() and python_sources_equivalent(
-            candidate_agent,
-            king_agent_path.read_text(encoding="utf-8"),
-        ):
-            reasons.append(
-                "Submission agent duplicates the current lane king implementation."
-            )
-    return dedupe(reasons)
-
-
-def validate_submission_near_copy_of_lane_king(
-    *,
-    metadata: SubmissionMetadata,
-    bundle_files: dict[str, str],
-    public_root: str | None = None,
-) -> list[str]:
-    candidate_agent = bundle_files.get(AGENT_ENTRY_FILENAME)
-    if candidate_agent is None:
-        return []
-    evaluator_entry = find_evaluator_pack_entry(
-        metadata.repo_pack, metadata.mode, public_root=public_root
-    )
-    if evaluator_entry is None:
-        return []
-    king_agent_path = (
-        resolve_public_king_root(
-            public_root=public_root,
-            repo_pack=metadata.repo_pack,
-            mode=metadata.mode,
-        )
-        / AGENT_ENTRY_FILENAME
-    )
-    if not king_agent_path.exists():
-        return []
-    king_agent = king_agent_path.read_text(encoding="utf-8")
-    if python_sources_equivalent(candidate_agent, king_agent):
-        return []
-    similarity = python_source_similarity(candidate_agent, king_agent)
-    if similarity < KING_NEAR_COPY_SIMILARITY_THRESHOLD:
-        return []
-    return [
-        "Screening review required: submission agent is highly similar to the "
-        f"current lane king implementation (similarity {similarity:.2f})."
-    ]
-
-
-def validate_submission_not_copycat_of_lane_king(
-    *,
-    lane_id: str,
-    submission_root: Path,
-    public_root: str | None = None,
-) -> list[str]:
-    if not lane_king_state_path(lane_id, public_root=public_root).exists():
-        return []
-    king = load_lane_king_state(lane_id, public_root=public_root)
-    if king.current_king_artifact_hash is None:
-        return []
-    candidate_hash = hash_submission_bundle(submission_root)
-    if candidate_hash == king.current_king_artifact_hash:
-        return [
-            "Submission bundle is an exact copy of the current lane king artifact."
-        ]
-    return []
-
-
-def python_sources_equivalent(left: str, right: str) -> bool:
-    try:
-        left_tree = ast.parse(left)
-        right_tree = ast.parse(right)
-    except SyntaxError:
-        return left == right
-    return ast.dump(left_tree, include_attributes=False) == ast.dump(
-        right_tree,
-        include_attributes=False,
-    )
-
-
-def python_source_similarity(left: str, right: str) -> float:
-    return difflib.SequenceMatcher(
-        None,
-        normalize_python_source_for_similarity(left),
-        normalize_python_source_for_similarity(right),
-    ).ratio()
-
-
-def normalize_python_source_for_similarity(source: str) -> str:
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return "\n".join(line.strip() for line in source.splitlines() if line.strip())
-    return ast.dump(tree, include_attributes=False)
-
-
-def screening_review_mode_enabled() -> bool:
-    return os.environ.get("KATA_SCREENING_REVIEW_MODE", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
