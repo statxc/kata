@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
-from kata.evaluators.sn60_bitsec import hash_bundle_root
+from kata.evaluators.sn60_bitsec import (
+    Sn60DuelSummary,
+    Sn60ProjectAggregate,
+    Sn60ReplicaResult,
+    Sn60SandboxSource,
+    Sn60VariantSummary,
+    hash_bundle_root,
+)
 from kata.lane_state import (
     KING_STATE_SCHEMA_VERSION,
     LaneKingState,
@@ -21,6 +30,7 @@ from kata.public_artifacts import (
 from kata.screening_system.rules import hash_submission_bundle
 from kata.submission_system import SUBMISSION_AGENT_FILENAME, SubmissionMetadata
 from kata.validator_system import ChallengeSummary
+from kata.validator_system.challenge import record_sn60_lane_provenance
 
 
 @dataclass(frozen=True)
@@ -107,6 +117,12 @@ def promote_lane_king(
     summary: ChallengeSummary,
     public_root: str | None = None,
 ) -> LanePromotionResult:
+    record_promotion_lane_provenance(
+        entry=entry,
+        verification=verification,
+        summary=summary,
+        public_root=public_root,
+    )
     published = publish_public_king(
         public_root=str(resolve_kata_root(public_root)),
         repo_pack=verification.repo_pack,
@@ -133,4 +149,87 @@ def promote_lane_king(
         lane_id=entry.lane_id,
         king_root=str(published.king_root),
         king=king,
+    )
+
+
+def record_promotion_lane_provenance(
+    *,
+    entry: PackRegistryEntry,
+    verification,
+    summary: ChallengeSummary,
+    public_root: str | None,
+) -> None:
+    """Persist lane challenge/promotion records for a promoted round winner."""
+    duel_summary = load_sn60_duel_summary(summary.primary.run_summary_path)
+    screening_result = {
+        "schema_version": 1,
+        "run_id": summary.run_id,
+        "status": "passed",
+        "stage": "round",
+        "artifact_path": verification.submission_path,
+        "artifact_hash": verification.candidate_artifact_hash,
+        "project_key": None,
+        "report_path": None,
+        "result_path": None,
+        "reasons": [],
+        "details": {"source": "promotion"},
+        "sandbox_source": {
+            "sandbox_root": duel_summary.sandbox_source.sandbox_root,
+            "benchmark_file": duel_summary.sandbox_source.benchmark_file,
+            "benchmark_sha256": duel_summary.sandbox_source.benchmark_sha256,
+            "sandbox_commit": duel_summary.sandbox_source.sandbox_commit,
+            "scorer_version": duel_summary.sandbox_source.scorer_version,
+        },
+        "created_at": summary.created_at,
+    }
+    record_sn60_lane_provenance(
+        lane_id=entry.lane_id,
+        candidate_submission_id=verification.submission_id,
+        duel_summary=duel_summary,
+        screening_result=screening_result,
+        public_root=public_root,
+    )
+
+
+def load_sn60_duel_summary(path: str) -> Sn60DuelSummary:
+    payload = json.loads(Path(path).expanduser().resolve().read_text(encoding="utf-8"))
+    return Sn60DuelSummary(
+        schema_version=int(payload["schema_version"]),
+        run_id=str(payload["run_id"]),
+        created_at=str(payload["created_at"]),
+        output_root=str(payload["output_root"]),
+        project_keys=[str(item) for item in payload.get("project_keys") or []],
+        replicas_per_project=int(payload["replicas_per_project"]),
+        sandbox_source=Sn60SandboxSource(**dict(payload["sandbox_source"])),
+        king=parse_sn60_variant_summary(payload["king"]),
+        candidate=parse_sn60_variant_summary(payload["candidate"]),
+    )
+
+
+def parse_sn60_variant_summary(payload: dict[str, object]) -> Sn60VariantSummary:
+    return Sn60VariantSummary(
+        variant_name=str(payload["variant_name"]),
+        artifact_path=str(payload["artifact_path"]),
+        artifact_hash=str(payload["artifact_hash"]),
+        successful_runs=int(payload["successful_runs"]),
+        invalid_runs=int(payload["invalid_runs"]),
+        pass_count=int(payload["pass_count"]),
+        codebase_pass_count=int(payload["codebase_pass_count"]),
+        aggregated_score=float(payload["aggregated_score"]),
+        average_detection_rate=float(payload["average_detection_rate"]),
+        true_positives=int(payload["true_positives"]),
+        total_expected=int(payload["total_expected"]),
+        total_found=int(payload["total_found"]),
+        precision=float(payload["precision"]),
+        f1_score=float(payload["f1_score"]),
+        project_summaries=[
+            Sn60ProjectAggregate(**dict(item))
+            for item in payload.get("project_summaries") or []
+            if isinstance(item, dict)
+        ],
+        replica_results=[
+            Sn60ReplicaResult(**dict(item))
+            for item in payload.get("replica_results") or []
+            if isinstance(item, dict)
+        ],
     )
