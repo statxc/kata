@@ -958,8 +958,14 @@ def build_default_execution_hook(
                 },
             )
         if completed.returncode != 0:
+            infrastructure_error = is_docker_run_infrastructure_error(
+                completed.returncode,
+                completed.stderr,
+                completed.stdout,
+            )
             return {
                 "success": False,
+                "infrastructure_error": infrastructure_error,
                 "error": (
                     f"Bitsec execution command failed with exit code {completed.returncode}: "
                     f"{completed.stderr.strip() or completed.stdout.strip()}"
@@ -985,6 +991,25 @@ def _read_untrusted_report_json(
     if not isinstance(payload, dict):
         return failure
     return payload
+
+
+def is_docker_run_infrastructure_error(
+    returncode: int,
+    stderr: str | None,
+    stdout: str | None,
+) -> bool:
+    if returncode == 125:
+        return True
+    combined = f"{stderr or ''}\n{stdout or ''}".lower()
+    image_error_markers = (
+        "pull access denied",
+        "repository does not exist",
+        "manifest unknown",
+        "no such image",
+        "unable to find image",
+        "requested access to the resource is denied",
+    )
+    return any(marker in combined for marker in image_error_markers)
 
 
 def extract_sn60_evaluation_payload(stdout: str) -> dict[str, object] | None:
@@ -1031,6 +1056,15 @@ def build_default_evaluation_hook(source: Sn60SandboxSource) -> Sn60EvaluationHo
         context: Sn60ReplicaContext,
         report_payload: dict[str, object],
     ) -> dict[str, object]:
+        if bool(report_payload.get("infrastructure_error")):
+            return {
+                "status": "error",
+                "error": str(
+                    report_payload.get("error")
+                    or "SN60 execution failed before the agent could run."
+                ),
+                "result": {},
+            }
         if not Path(context.report_path).exists():
             write_json(Path(context.report_path), report_payload)
         # Cost/latency saver: a successful report with zero findings has zero true

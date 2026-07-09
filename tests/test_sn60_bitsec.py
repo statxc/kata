@@ -581,6 +581,41 @@ def test_default_evaluation_hook_ignores_agent_writable_evaluation_json(
     assert payload["result"] == {}
 
 
+def test_default_evaluation_hook_rejects_infrastructure_execution_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    sandbox_root = tmp_path / "sandbox"
+    benchmark_path = write_sandbox_source(sandbox_root)
+    source = resolve_sn60_sandbox_source(
+        sandbox_root=str(sandbox_root),
+        benchmark_file=str(benchmark_path),
+        sandbox_commit="commit-1",
+        scorer_version="ScaBenchScorerV2",
+    )
+    context = _make_context(tmp_path, source)
+    called = {"scorer": False}
+
+    def fake_run(cmd, *args, **kwargs):
+        called["scorer"] = True
+        return subprocess.CompletedProcess(cmd, 0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    payload = build_default_evaluation_hook(source)(
+        context,
+        {
+            "success": False,
+            "infrastructure_error": True,
+            "error": "Docker image ghcr.io/bitsec-ai/proj:latest is unavailable.",
+        },
+    )
+
+    assert called["scorer"] is False
+    assert payload["status"] == "error"
+    assert "Docker image" in payload["error"]
+    assert payload["result"] == {}
+
+
 def _run_default_execution_hook_with_report(tmp_path, monkeypatch, source, report_text):
     """Drive the default execution hook with the docker/subprocess edges mocked,
     after the (untrusted) agent wrote `report_text` to report.json."""
@@ -598,6 +633,44 @@ def _run_default_execution_hook_with_report(tmp_path, monkeypatch, source, repor
         lambda cmd, *a, **k: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
     )
     return sn60.build_default_execution_hook(source)(context)
+
+
+def test_default_execution_hook_marks_docker_run_failure_as_infrastructure_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from kata.evaluators import sn60_bitsec as sn60
+
+    sandbox_root = tmp_path / "sandbox"
+    benchmark_path = write_sandbox_source(sandbox_root)
+    source = resolve_sn60_sandbox_source(
+        sandbox_root=str(sandbox_root),
+        benchmark_file=str(benchmark_path),
+        sandbox_commit="commit-1",
+        scorer_version="ScaBenchScorerV2",
+    )
+    context = _make_context(tmp_path, source)
+
+    monkeypatch.setenv("INFERENCE_API_KEY", "run-token")
+    monkeypatch.setattr(sn60, "ensure_internal_agent_network", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, *a, **k: subprocess.CompletedProcess(
+            cmd,
+            125,
+            stdout="",
+            stderr=(
+                "Unable to find image 'ghcr.io/bitsec-ai/proj:latest' locally\n"
+                "docker: Error response from daemon: pull access denied"
+            ),
+        ),
+    )
+
+    payload = sn60.build_default_execution_hook(source)(context)
+
+    assert payload["success"] is False
+    assert payload["infrastructure_error"] is True
+    assert "exit code 125" in payload["error"]
 
 
 def test_malformed_agent_report_is_recorded_failure_not_a_crash(
