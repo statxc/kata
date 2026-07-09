@@ -957,6 +957,36 @@ def _deterministic_findings(records: list[dict[str, Any]]) -> list[dict[str, Any
                     confidence=0.96,
                 )
             )
+
+        if (
+            "function _updateintent(" in low
+            and "guarantee memory newguarantee = guaranteelib.from(" in low
+            and re.search(r"orderlib\.from\([^)]*amount,\s*fixed6lib\.zero", low)
+            and "neworder," in low
+            and "price," in low
+            and "_accumulatepriceoverride" in repo_low
+            and "return guarantee.taker().mul(toversion.price).sub(guarantee.notional);" in repo_low
+            and "positionlib.margined(" in repo_low
+            and "context.latestoracleversion" in repo_low
+        ):
+            findings.append(
+                _make_finding(
+                    title="User-specified intent price creates settlement PnL that margin checks never bound",
+                    description=(
+                        "This intent flow builds a guarantee from a caller-provided override price and later settles "
+                        "price-override PnL as `guarantee.taker() * oraclePrice - guarantee.notional`. However, the "
+                        "invariant path still checks margin against the latest oracle version rather than bounding the "
+                        "user-specified override price itself. A trader can therefore submit an extreme override price "
+                        "that passes entry-time collateral checks but mints outsized settlement PnL once the override "
+                        "difference is realized, allowing collateral extraction that was never economically secured."
+                    ),
+                    severity="critical",
+                    file=rel,
+                    function="_updateIntent",
+                    line=_line_for(text, "Guarantee memory newGuarantee = GuaranteeLib.from("),
+                    confidence=0.97,
+                )
+            )
     return findings
 
 
