@@ -70,6 +70,7 @@ MAX_FINDINGS = 4
 MAX_RUNTIME_SECONDS = 230
 REQUEST_TIMEOUT_SECONDS = 150
 MAX_TARGETED_FUNCTIONS = 6
+MAX_MODEL_CALLS = 3
 
 RISK_TERMS = (
     "delegatecall",
@@ -181,6 +182,21 @@ GENERIC_REJECTION_TERMS = (
 )
 
 EVIDENCE_MARKERS = ("require(", "assert(", "if ", "return ", "+=", "-=", "*=", "/=", "= ", "unchecked", "for ", "while ")
+ACCESS_CONTROL_MARKERS = (
+    "onlyowner",
+    "onlyrole",
+    "onlygovern",
+    "onlyadmin",
+    "onlymanager",
+    "onlyoperator",
+    "requiresauth",
+    "requires_auth",
+    "auth",
+    "govern",
+    "admin",
+    "owner",
+    "manager",
+)
 
 AUDITOR_SYSTEM = (
     "You are a senior smart-contract security auditor. Return only real high or "
@@ -468,6 +484,30 @@ def _function_windows(rec: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _sol_function_bodies(text: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for match in SOL_FUNC_RE.finditer(text):
+        header = match.group(0)
+        if not header.rstrip().endswith("{"):
+            continue
+        open_idx = text.find("{", match.end() - 1)
+        if open_idx < 0:
+            continue
+        end = _find_matching_brace(text, open_idx)
+        if end < 0:
+            continue
+        out.append(
+            {
+                "name": match.group(1),
+                "params": match.group(2),
+                "tail": match.group(3),
+                "line": text.count("\n", 0, match.start()) + 1,
+                "body": text[open_idx : end + 1],
+            }
+        )
+    return out
+
+
 def _function_suspicion(rec: dict[str, Any], fn: dict[str, Any]) -> int:
     low_name = str(fn["name"]).lower()
     low_snippet = str(fn["snippet"]).lower()
@@ -491,10 +531,101 @@ def _function_suspicion(rec: dict[str, Any], fn: dict[str, Any]) -> int:
     return score
 
 
-def _request(inference_api: str | None, messages: list[dict[str, str]], max_tokens: int) -> str:
+def _param_name(param_decl: str) -> str:
+    parts = [part for part in re.split(r"\s+", param_decl.strip()) if part]
+    if not parts:
+        return ""
+    name = parts[-1].strip(",")
+    return re.sub(r"[^A-Za-z0-9_]", "", name)
+
+
+def _generic_auth_toggle_findings(rec: dict[str, Any]) -> list[dict[str, Any]]:
+    text = str(rec["text"])
+    low = text.lower()
+    rel = str(rec["rel"])
+    findings: list[dict[str, Any]] = []
+    for fn in _sol_function_bodies(text):
+        tail_low = str(fn["tail"]).lower()
+        if "external" not in tail_low and "public" not in tail_low:
+            continue
+        if any(marker in tail_low for marker in ACCESS_CONTROL_MARKERS):
+            continue
+        params = [part.strip() for part in str(fn["params"]).split(",") if part.strip()]
+        if len(params) < 2:
+            continue
+        addr_name = ""
+        bool_name = ""
+        for param in params[:3]:
+            param_low = param.lower()
+            if not addr_name and "address" in param_low:
+                addr_name = _param_name(param)
+            elif not bool_name and "bool" in param_low:
+                bool_name = _param_name(param)
+        if not addr_name or not bool_name:
+            continue
+        match = re.search(
+            rf"\b([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*{re.escape(addr_name)}\s*\]\s*=\s*{re.escape(bool_name)}\s*;",
+            str(fn["body"]),
+            re.IGNORECASE,
+        )
+        if not match:
+            continue
+        mapping_name = match.group(1)
+        if not any(
+            pattern in low
+            for pattern in (
+                f"|| {mapping_name.lower()}[sender]",
+                f"|| {mapping_name.lower()}[msg.sender]",
+                f"|| {mapping_name.lower()}[caller]",
+                f"&& {mapping_name.lower()}[sender]",
+                f"&& {mapping_name.lower()}[msg.sender]",
+                f"require({mapping_name.lower()}[sender]",
+                f"require ({mapping_name.lower()}[sender]",
+                f"require({mapping_name.lower()}[msg.sender]",
+                f"if ({mapping_name.lower()}[sender]",
+                f"if ({mapping_name.lower()}[msg.sender]",
+            )
+        ):
+            continue
+        findings.append(
+            _make_finding(
+                title="Unrestricted external authorization toggle lets callers self-enable a global operator mapping",
+                description=(
+                    f"This contract exposes `{fn['name']}()` as an unrestricted external function that writes the "
+                    f"`{mapping_name}` authorization mapping directly from caller-controlled parameters. The same mapping "
+                    "is later consulted by authorization logic to decide whether an actor may operate on behalf of other "
+                    "accounts. Because any caller can toggle that shared authorization bit for itself without governance "
+                    "or owner approval, an untrusted address can self-authorize and cross intended trust boundaries."
+                ),
+                severity="critical",
+                file=rel,
+                function=str(fn["name"]),
+                line=int(fn["line"]),
+                confidence=0.97,
+            )
+        )
+    return findings
+
+
+def _consume_model_budget(model_budget: dict[str, int] | None) -> None:
+    if model_budget is None:
+        return
+    remaining = int(model_budget.get("remaining", 0))
+    if remaining <= 0:
+        raise RuntimeError("model call budget exhausted")
+    model_budget["remaining"] = remaining - 1
+
+
+def _request(
+    inference_api: str | None,
+    messages: list[dict[str, str]],
+    max_tokens: int,
+    model_budget: dict[str, int] | None = None,
+) -> str:
     endpoint = (inference_api or os.environ.get("INFERENCE_API") or "").rstrip("/")
     if not endpoint:
         raise RuntimeError("missing inference endpoint")
+    _consume_model_budget(model_budget)
     body = json.dumps(
         {
             "messages": messages,
@@ -642,6 +773,7 @@ def _deterministic_findings(records: list[dict[str, Any]]) -> list[dict[str, Any
         text = str(rec["text"])
         rel = str(rec["rel"])
         low = text.lower()
+        findings.extend(_generic_auth_toggle_findings(rec))
 
         if (
             _contains_all(low, ("amountclaimed", "totalamount", "releaserate", "stepsclaimed"))
@@ -693,31 +825,6 @@ def _deterministic_findings(records: list[dict[str, Any]]) -> list[dict[str, Any
             )
 
         if (
-            "vestingmanager" in rel.lower()
-            and _contains_all(low, ("listvesting", "completepurchase", "allocations", "transfervesting"))
-            and "transfervesting(seller, address(this), amount)" in low
-            and "transfervesting(address(this), buyer, amount)" in low
-        ):
-            findings.append(
-                _make_finding(
-                    title="Marketplace listing order changes buyer claim timing by pooling vestings with inherited step progress",
-                    description=(
-                        "The marketplace flow first pulls sold vesting into `address(this)` in `listVesting()` and later "
-                        "forwards portions to buyers in `completePurchase()`. Because the underlying vesting transfer path "
-                        "propagates matured-step progress from the source vesting instead of creating a fresh schedule, the "
-                        "marketplace's intermediate inventory carries timing state that depends on when each listing entered "
-                        "the pool. Buyers therefore receive claimability that depends on listing order rather than only on the "
-                        "amount purchased, so two equivalent purchases at the same step can unlock different amounts."
-                    ),
-                    severity="high",
-                    file=rel,
-                    function="completePurchase",
-                    line=_line_for(text, "SecondSwap_Vesting(vesting).transferVesting(address(this), buyer, amount);"),
-                    confidence=0.98,
-                )
-            )
-
-        if (
             _contains_all(low, ("lastbalance", "accrued", "totalshares", "index"))
             and "balanceof(vault)" in low
             and re.search(r"if\s*\(\s*totalshares\s*!=\s*0\s*\)\s*index\s*\+?=\s*accrued", low)
@@ -738,59 +845,6 @@ def _deterministic_findings(records: list[dict[str, Any]]) -> list[dict[str, Any
                     function="_updateRewardIndex",
                     line=_line_for(text, "uint256 accrued = IERC20(tokens[i]).balanceOf(vault) - lastBalance;"),
                     confidence=0.99,
-                )
-            )
-
-        if (
-            _contains_all(low, ("repaycreditaccount", "profit", "loss", "repayamount"))
-            and "calctotaldebt" in low
-            and re.search(r"loss\s*=\s*calctotaldebt\([^)]*\)\s*-\s*repayamount", low)
-            and re.search(r"if\s*\(\s*repayamount\s*>\s*[^)]*debt[^)]*\)", low)
-            and re.search(r"profit\s*=\s*repayamount\s*-\s*[^;\n]*debt", low)
-        ):
-            findings.append(
-                _make_finding(
-                    title="Bad-debt liquidation splits profit and loss against different debt bases",
-                    description=(
-                        "In `liquidatePositionBadDebt()`, `loss` is measured against `calcTotalDebt(debtData)` "
-                        "while `profit` is only measured against `debtData.debt`, and both values are then passed "
-                        "into `repayCreditAccount(debtData.debt, profit, loss)`. That mixes principal-only and "
-                        "total-debt accounting in the same settlement path, so accrued interest or quota interest can "
-                        "be misclassified between profit and loss. The result is incorrect bad-debt settlement and "
-                        "mis-accounting of liquidation outcomes."
-                    ),
-                    severity="high",
-                    file=rel,
-                    function="liquidatePositionBadDebt",
-                    line=_line_for(text, "uint256 loss = calcTotalDebt(debtData) - repayAmount;"),
-                    confidence=0.97,
-                )
-            )
-
-        if (
-            "receive() external payable" in low
-            and "stake();" in low
-            and "confirmwithdrawal" in low
-            and "_processconfirmation" in low
-            and "payable(msg.sender).call{value: amount}" in low
-            and "_withdrawfromvalidator" in low
-        ):
-            findings.append(
-                _make_finding(
-                    title="Automatic native-token restaking can consume withdrawal proceeds before users claim them",
-                    description=(
-                        "This contract routes every direct native-token transfer through `receive() -> stake()`. "
-                        "The same contract also queues validator withdrawals and later pays confirmed withdrawals "
-                        "from its native balance. If validator or bridge settlement sends native assets directly "
-                        "to the contract, the fallback restakes them immediately instead of preserving them for "
-                        "pending claims, so withdrawal proceeds can be recycled into new shares and claimants can "
-                        "be left unable to withdraw the assets already pulled back for them."
-                    ),
-                    severity="high",
-                    file=rel,
-                    function="receive",
-                    line=_line_for(text, "receive() external payable {"),
-                    confidence=0.98,
                 )
             )
 
@@ -824,36 +878,6 @@ def _deterministic_findings(records: list[dict[str, Any]]) -> list[dict[str, Any
             )
 
         if (
-            _contains_all(low, ("cancelwithdrawal", "redelegatewithdrawnhype", "_cancelledwithdrawalamount"))
-            and "totalqueuedwithdrawals -= hypeamount" in low
-            and "_cancelledwithdrawalamount += hypeamount" in low
-            and "_distributestake(amount, operationtype.spotdeposit)" in low
-            and "amountfrombuffer = math.min(amount, currentbuffer)" in low
-            and "hypebuffer = currentbuffer - amountfrombuffer" in low
-            and "l1write.sendcdeposit(uint64(truncatedamount));" in low
-            and "failed to send hype to l1" in low
-        ):
-            findings.append(
-                _make_finding(
-                    title="Cancelled buffer-backed withdrawals are redelegated through spot deposit without restoring buffer liquidity",
-                    description=(
-                        "When a user withdrawal is first satisfied from `hypeBuffer`, `_withdrawFromValidator()` immediately "
-                        "reduces the buffer before the user has actually claimed the assets. If that queued withdrawal is later "
-                        "cancelled, `cancelWithdrawal()` does not restore `hypeBuffer`; it only moves the amount into "
-                        "`_cancelledWithdrawalAmount`. The follow-up `redelegateWithdrawnHYPE()` path then routes that amount "
-                        "through `SpotDeposit`, which performs `sendCDeposit` without the user-deposit step that first pushes "
-                        "native HYPE to `L1_HYPE_CONTRACT`. That means buffer-backed assets can be removed from local exit "
-                        "liquidity and then redelegated through the wrong bridge path instead of restoring the buffer."
-                    ),
-                    severity="high",
-                    file=rel,
-                    function="redelegateWithdrawnHYPE",
-                    line=_line_for(text, "function redelegateWithdrawnHYPE() external onlyRole(MANAGER_ROLE) whenNotPaused {"),
-                    confidence=0.95,
-                )
-            )
-
-        if (
             "domainseparator" in low
             and "requesttypehash" in low
             and "digest = keccak256" in low
@@ -878,29 +902,6 @@ def _deterministic_findings(records: list[dict[str, Any]]) -> list[dict[str, Any
                     function="_verifySig",
                     line=_line_for(text, 'abi.encodePacked("\\x19\\x01", domainSeparator'),
                     confidence=0.98,
-                )
-            )
-
-        if (
-            "function updateextension(address extension, bool newenabled) external" in low
-            and "extensions[extension] = newenabled" in low
-            and "account == sender || extensions[sender] || operators[account][sender]" in low
-        ):
-            findings.append(
-                _make_finding(
-                    title="Any caller can self-authorize as a protocol-wide extension operator",
-                    description=(
-                        "The contract exposes `updateExtension()` as an unrestricted external function that writes the global "
-                        "`extensions` authorization mapping. The same mapping is then trusted by the main `authorization()` "
-                        "check to treat `extensions[sender]` as a valid operator for arbitrary accounts. Because callers can "
-                        "enable themselves without owner or governance approval, an untrusted address can become a protocol-wide "
-                        "operator and act on behalf of other accounts."
-                    ),
-                    severity="critical",
-                    file=rel,
-                    function="updateExtension",
-                    line=_line_for(text, "function updateExtension(address extension, bool newEnabled) external"),
-                    confidence=0.99,
                 )
             )
 
@@ -1013,7 +1014,11 @@ def _evidence_list(raw: dict[str, Any]) -> list[str]:
     return cleaned[:4]
 
 
-def _triage(inference_api: str | None, records: list[dict[str, Any]]) -> tuple[list[str], list[dict[str, Any]]]:
+def _triage(
+    inference_api: str | None,
+    records: list[dict[str, Any]],
+    model_budget: dict[str, int] | None = None,
+) -> tuple[list[str], list[dict[str, Any]]]:
     prompt = (
         "Review this compact smart-contract repository map. Pick the files most likely to contain "
         "real exploitable high or critical bugs caused by broken state transitions or accounting, and "
@@ -1037,6 +1042,7 @@ def _triage(inference_api: str | None, records: list[dict[str, Any]]) -> tuple[l
                 inference_api,
                 [{"role": "system", "content": AUDITOR_SYSTEM}, {"role": "user", "content": prompt}],
                 5000,
+                model_budget,
             )
         )
     except Exception:
@@ -1091,6 +1097,7 @@ def _deep_audit(
     inference_api: str | None,
     batch: list[dict[str, Any]],
     by_name: dict[str, dict[str, Any]],
+    model_budget: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     if not batch:
         return []
@@ -1100,6 +1107,7 @@ def _deep_audit(
                 inference_api,
                 [{"role": "system", "content": AUDITOR_SYSTEM}, {"role": "user", "content": _batch_prompt(batch, by_name)}],
                 8000,
+                model_budget,
             )
         )
     except urllib.error.HTTPError:
@@ -1161,6 +1169,7 @@ def _targeted_function_audit(
     rec: dict[str, Any],
     fn: dict[str, Any],
     by_name: dict[str, dict[str, Any]],
+    model_budget: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     related = _related_for(rec, by_name)
     prompt = (
@@ -1185,6 +1194,7 @@ def _targeted_function_audit(
                 inference_api,
                 [{"role": "system", "content": AUDITOR_SYSTEM}, {"role": "user", "content": prompt}],
                 2200,
+                model_budget,
             )
         )
     except Exception:
@@ -1372,66 +1382,70 @@ def agent_main(project_dir: str | None = None, inference_api: str | None = None)
 
     rel_map = {r["rel"]: r for r in records}
     by_name = {Path(r["rel"]).name: r for r in records}
+    model_budget = {"remaining": MAX_MODEL_CALLS}
 
     verified: list[dict[str, Any]] = _dedupe(_deterministic_findings(records))
 
-    if len(verified) < 2 and time.monotonic() - start < MAX_RUNTIME_SECONDS:
+    if len(verified) < 3 and time.monotonic() - start < MAX_RUNTIME_SECONDS:
         raw_findings: list[dict[str, Any]] = []
-        targets, triage_findings = _triage(inference_api, records)
+        targets, triage_findings = _triage(inference_api, records, model_budget)
         raw_findings.extend(triage_findings)
 
         first_batch, second_batch = _choose_batches(targets, records)
         if time.monotonic() - start < MAX_RUNTIME_SECONDS:
-            raw_findings.extend(_deep_audit(inference_api, first_batch, by_name))
-        if time.monotonic() - start < MAX_RUNTIME_SECONDS:
-            raw_findings.extend(_deep_audit(inference_api, second_batch, by_name))
+            raw_findings.extend(_deep_audit(inference_api, first_batch, by_name, model_budget))
 
         normalized: list[dict[str, Any]] = []
         for raw in raw_findings:
             item = _normalize(raw, rel_map)
             if item is not None:
                 normalized.append(item)
-        candidates = _dedupe(normalized)
-        for item in candidates[:6]:
-            rec = rel_map.get(str(item.get("file") or ""))
-            if rec is None:
-                continue
-            checked = _verify_candidate(inference_api, dict(item), rec, by_name)
-            if checked is not None:
-                checked.pop("evidence", None)
-                verified.append(checked)
+        verified.extend(_dedupe(normalized))
 
-    if len(verified) < 2 and time.monotonic() - start < MAX_RUNTIME_SECONDS:
-        target_pool: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
-        for rec in records[:18]:
-            for fn in _function_windows(rec):
-                score = _function_suspicion(rec, fn)
-                if score > 0:
-                    target_pool.append((score, rec, fn))
-        target_pool.sort(key=lambda item: item[0], reverse=True)
-        seen_fn: set[tuple[str, str]] = set()
-        targeted_raw: list[dict[str, Any]] = []
-        for _, rec, fn in target_pool:
-            key = (str(rec["rel"]), str(fn["name"]))
-            if key in seen_fn:
-                continue
-            seen_fn.add(key)
-            targeted_raw.extend(_targeted_function_audit(inference_api, rec, fn, by_name))
-            if len(seen_fn) >= MAX_TARGETED_FUNCTIONS or time.monotonic() - start >= MAX_RUNTIME_SECONDS:
-                break
-        extra: list[dict[str, Any]] = []
-        for raw in targeted_raw:
-            item = _normalize(raw, rel_map)
-            if item is None:
-                continue
-            rec = rel_map.get(str(item.get("file") or ""))
-            if rec is None:
-                continue
-            checked = _verify_candidate(inference_api, dict(item), rec, by_name)
-            if checked is not None:
-                checked.pop("evidence", None)
-                extra.append(checked)
-        verified.extend(extra)
+        used_focused_third_call = False
+        if (
+            len(_dedupe(verified)) < 2
+            and model_budget.get("remaining", 0) > 0
+            and time.monotonic() - start < MAX_RUNTIME_SECONDS
+        ):
+            target_pool: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
+            first_batch_paths = {str(rec["rel"]) for rec in first_batch}
+            for rec in records[:18]:
+                for fn in _function_windows(rec):
+                    score = _function_suspicion(rec, fn)
+                    if score > 0:
+                        if str(rec["rel"]) in first_batch_paths:
+                            score += 8
+                        target_pool.append((score, rec, fn))
+            target_pool.sort(key=lambda item: item[0], reverse=True)
+            seen_fn: set[tuple[str, str]] = set()
+            for _, rec, fn in target_pool:
+                key = (str(rec["rel"]), str(fn["name"]))
+                if key in seen_fn:
+                    continue
+                seen_fn.add(key)
+                focused = _targeted_function_audit(inference_api, rec, fn, by_name, model_budget)
+                extra: list[dict[str, Any]] = []
+                for raw in focused:
+                    item = _normalize(raw, rel_map)
+                    if item is not None:
+                        extra.append(item)
+                used_focused_third_call = True
+                if extra:
+                    verified.extend(_dedupe(extra))
+                    break
+        if (
+            not used_focused_third_call
+            and model_budget.get("remaining", 0) > 0
+            and time.monotonic() - start < MAX_RUNTIME_SECONDS
+        ):
+            late_raw = _deep_audit(inference_api, second_batch, by_name, model_budget)
+            late_normalized: list[dict[str, Any]] = []
+            for raw in late_raw:
+                item = _normalize(raw, rel_map)
+                if item is not None:
+                    late_normalized.append(item)
+            verified.extend(_dedupe(late_normalized))
     return {"vulnerabilities": _dedupe(verified)}
 
 
